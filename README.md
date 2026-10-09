@@ -1,8 +1,10 @@
 # 📊 MetaTrader Docker
 
-### 🚀 Run MetaTrader 4 (MT4) and MetaTrader 5 (MT5) 24/7 on a Linux VPS
+🚀 Run MetaTrader 4 (MT4) & MetaTrader 5 (MT5) 24/7 on Headless Linux VPS
 
-*A lightweight, automated solution for running trading terminals without Windows on the host machine. Manage installations, Expert Advisors, indicators, services, backups, and logs through a single interactive shell script.*
+Turn any bare-bones **Ubuntu Server (no desktop environment / no GUI installed)** into a reliable 24/7 trading station. The host operating system remains 100% headless, saving valuable RAM and CPU, while an isolated Docker container provides the virtual graphics layer and browser-based access via noVNC.
+
+Save on Windows licensing and heavyweight desktop packages on low-spec VPS (1–2 GB RAM). Deploy and manage terminals, EAs, backups, and process health checks through a single interactive shell script.
 
 ## ✨ Highlights
 
