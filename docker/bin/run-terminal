@@ -1,1 +1,54 @@
 
+#!/usr/bin/env bash
+# =============================================================================
+# Terminal Runner & Graceful Termination Script
+# =============================================================================
+set -euo pipefail
+source /opt/mt/lib/common.sh
+
+ID="${1:?Usage: run-terminal mt4|mt5}"
+load_terminal "$ID"
+COMP="run-$ID"
+WPID=""
+
+stop() {
+  log INFO "$COMP" "SIGTERM received: shutting down $MT_NAME gracefully"
+  WINEPREFIX="$WINEPREFIX" wine taskkill /IM "$MT_EXE_NAME" 2>/dev/null || true
+  [[ -n "$WPID" ]] && kill -TERM "$WPID" 2>/dev/null || true
+  if [[ -n "$WPID" ]]; then
+    for _ in $(seq 1 45); do
+      kill -0 "$WPID" 2>/dev/null || break
+      sleep 1
+    done
+  fi
+  if [[ -n "$WPID" ]] && kill -0 "$WPID" 2>/dev/null; then
+    WINEPREFIX="$WINEPREFIX" wineserver -k 2>/dev/null || true
+  fi
+  [[ -n "$WPID" ]] && wait "$WPID" 2>/dev/null || true
+  WINEPREFIX="$WINEPREFIX" wineserver -w 2>/dev/null || true
+  exit 0
+}
+trap stop TERM INT
+
+n=0
+until [[ -s "$MT_MARKER" ]]; do
+  if (( n % 30 == 0 )); then
+    log WARN "$COMP" "$MT_NAME is not installed yet. Run: docker compose exec mt mt-install $ID"
+  fi
+  n=$((n + 1))
+  sleep 10 & wait $!
+done
+
+EXE="$(<"$MT_MARKER")"
+[[ -f "$EXE" ]] || die "$COMP" "Executable not found: $EXE (reinstall via: mt-install $ID --force)"
+
+log INFO "$COMP" "Launching $MT_NAME: $EXE"
+cd "$(dirname "$EXE")"
+wine "$EXE" /portable &
+WPID=$!
+
+rc=0
+wait "$WPID" || rc=$?
+log WARN "$COMP" "$MT_NAME terminated (exit code: $rc); supervisord will restart process"
+sleep 10
+exit "$rc"
