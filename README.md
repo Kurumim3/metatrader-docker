@@ -1,94 +1,131 @@
 # 📊 MetaTrader Docker
 
-🚀 Run MetaTrader 4 (MT4) & MetaTrader 5 (MT5) 24/7 on Headless Ubuntu Server
+> 🚀 Run MetaTrader 4 (MT4) and MetaTrader 5 (MT5) 24/7 on a Headless Ubuntu Server.
 
-A lightweight, production-ready solution tailored specifically for **minimal Ubuntu Server installations without a desktop environment (headless / CLI-only)**. It creates a virtual display layer inside Docker (Xvfb + Fluxbox + noVNC), allowing you to run, manage, and access Windows trading terminals directly from your web browser with zero GUI packages installed on the host VPS.
+A lightweight, Docker-based solution for running Windows trading terminals on Linux VPS environments without requiring a desktop environment on the host.
 
-Manage base setup, terminal installations, Expert Advisors (EAs), custom indicators, background services, automated backups, and runtime logs through a single interactive shell script.
+**MetaTrader Docker** combines Wine, Xvfb, Fluxbox, x11vnc, noVNC, and Supervisor to provide a virtual desktop, browser-based access, process management, and persistent terminal data in a single containerized environment.
+
+Manage installation, terminal provisioning, Expert Advisors (EAs), custom indicators, diagnostics, backups, and maintenance through an interactive shell menu.
+
+---
+
+## 💡 Why MetaTrader Docker?
+
+Running Windows-based trading terminals on Linux can involve complex setup procedures, desktop dependencies, and limited server resources. MetaTrader Docker simplifies this process by integrating the essential components into a unified deployment workflow.
+
+### ⭐ Key Differentiators
+
+* **🔄 Dual Terminal Support:** Run MetaTrader 4 (32-bit) and MetaTrader 5 (64-bit) in separate Wine prefixes, independently or simultaneously.
+* **⚡ Lightweight Desktop Stack:** Uses Xvfb and Fluxbox instead of a full desktop environment, making it suitable for resource-constrained VPS deployments.
+* **🤖 Automated Installation:** Streamlines terminal installation and process initialization through an interactive management script.
+* **🛡️ Managed Shutdown:** Coordinates process termination to help terminals close cleanly and reduce the risk of data loss.
+* **🔒 Secure Remote Access:** Provides browser-based access through noVNC over an SSH tunnel, without requiring direct public exposure of the VNC service.
+* **🎮 All-in-One CLI Manager:** Simplifies deployment, service operations, diagnostics, backups, and maintenance through a single interactive menu.
+
+---
 
 ## ✨ Highlights
 
-* ⚡ **Lightweight Deployment:** Designed for low-resource VPS environments.
-* 🖥️ **Browser-Based GUI:** Access the desktop through noVNC.
-* 🐳 **Automated Setup:** Simplifies deployment using Docker and Wine.
-* 💾 **Persistent Environments:** Keeps MT4 and MT5 data across container restarts.
-* 🎮 **Interactive Management Menu:** Manage installation and everyday operations from one place.
+* 🐳 **Docker-Based Deployment:** Package the trading environment in a manageable container.
+* 🖥️ **Browser-Based GUI:** Access the virtual desktop from a modern web browser.
+* 📈 **MT4 & MT5 Compatibility:** Support legacy 32-bit and modern 64-bit terminal environments.
+* 💾 **Persistent Storage:** Keep terminal data and configurations outside the container using mounted volumes.
+* 🤖 **EA & Indicator Deployment:** Install compiled trading algorithms and custom indicators through the management menu.
+* 📊 **Resource Management:** Configure memory, swap, CPU, and process limits according to the deployment environment.
+* 🔍 **Integrated Diagnostics:** Inspect container status, running processes, resource usage, and logs.
+* 🛠️ **Maintenance Tools:** Simplify container operations, backups, and troubleshooting.
+
+---
 
 ## 📋 Features
 
-* 🚀 **One-Command Installer:** Sets up Docker, configures swap, generates project files, builds the image, and starts the container.
-* 📈 **MT4 & MT5 Support:** Install and run both MetaTrader terminals in separate Wine environments.
-* 🌐 **Web-Based Desktop:** Access the graphical interface directly from your browser using noVNC.
-* 📊 **VPS Resource Optimization:** Configurable memory, CPU, swap, and container limits.
-* 📂 **Persistent Data:** Stores terminal environments and logs in mounted directories.
-* 🤖 **Expert Advisor Deployment:** Install compiled `.ex4` and `.ex5` files through the interactive menu.
-* ⚙️ **Service Supervision:** Manage terminal processes with automatic restart support.
-* 🔍 **Integrated Diagnostics:** Check container status, running processes, resource usage, and logs.
-* 🛠️ **Maintenance Tools:** Access backups, updates, service management, and log inspection from the menu.
-* 🔒 **Security-Focused Configuration:** Reduced container privileges and SSH-tunneled access to noVNC.
+| Feature                   | Description                                                                       |
+| :------------------------ | :-------------------------------------------------------------------------------- |
+| 🚀 Automated Installer    | Prepares the environment, configures Docker, and builds and starts the container. |
+| 📈 MT4 & MT5              | Supports separate Wine prefixes for each terminal.                                |
+| 🌐 noVNC Access           | Provides browser-based access to the virtual desktop.                             |
+| 🪶 Lightweight GUI        | Uses Xvfb and Fluxbox instead of a full desktop environment.                      |
+| 💾 Persistent Data        | Stores terminal environments and other configured data in host-mounted volumes.   |
+| 🤖 EA & Indicator Manager | Deploys compiled `.ex4` and `.ex5` files.                                         |
+| ⚙️ Process Supervision    | Uses Supervisor to manage configured background services.                         |
+| 🔍 Diagnostics            | Provides status information, resource monitoring, and log inspection.             |
+| 🛠️ Maintenance           | Offers backup and container management utilities.                                 |
+| 🔒 Security Controls      | Supports reduced container privileges and loopback-only remote desktop access.    |
+
+---
 
 ## 💻 System Requirements
 
-| **Requirement**      | **Details**                                             |
-| -------------------- | ------------------------------------------------------- |
-| **Operating System** | Ubuntu 22.04 LTS recommended                            |
-| **Privileges**       | Root access or `sudo` permissions                       |
-| **RAM**              | 1 GB minimum; 2 GB recommended for MT4 and MT5 together |
-| **Disk Space**       | At least 10 GB free                                     |
-| **Network**          | Internet connection for installation and downloads      |
-| **Local Access**     | SSH client and a modern web browser                     |
+| Requirement      | Recommendation                                                                 |
+| :--------------- | :----------------------------------------------------------------------------- |
+| Operating System | Ubuntu Server 22.04 LTS                                                        |
+| Permissions      | Root access or `sudo` privileges                                               |
+| RAM              | 1 GB minimum; 2 GB or more recommended                                         |
+| Disk Space       | At least 10 GB of free space                                                   |
+| Network          | Outbound internet access for installation and downloads                        |
+| Local Computer   | SSH client and a modern web browser                                            |
+| Software         | Docker Engine and Docker Compose, installed by the setup process if configured |
+
+**Resource note:** Actual RAM, CPU, and storage requirements depend on the number of terminals, charts, indicators, Expert Advisors, and trading workloads. Additional memory may be necessary for running MT4 and MT5 concurrently.
+
+---
 
 ## ⚡ Quick Start
 
-### Step 1: Clone the Repository
+### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/Kurumim3/metatrader-docker.git
 cd metatrader-docker
 ```
 
-### Step 2: Run the Installer
+### 2. Run the Installer
 
-If the script has Windows-style line endings (`CRLF`), convert it first:
+If the installer contains Windows-style line endings (`CRLF`), normalize the file first:
 
 ```bash
 sed -i 's/\r$//' install-mt-docker.sh
 ```
 
-Start the interactive installer:
+Launch the interactive installer:
 
 ```bash
 sudo bash install-mt-docker.sh
 ```
 
-### Step 3: Configure via the Interactive Menu
+### 3. Configure the Environment
 
-Follow the on-screen options:
+Follow the on-screen menu to complete the initial setup and manage your terminals.
 
-| **Option** | **Action / Description**               |
-| ---------- | -------------------------------------- |
-| **1**      | Install the base environment           |
-| **2**      | Install MT4, MT5, or both              |
-| **3**      | Install Expert Advisors and indicators |
-| **4**      | Check status and diagnostics           |
-| **5**      | Start, stop, or restart services       |
-| **6**      | Access maintenance tools               |
-| **0**      | Exit                                   |
+| Option | Action                                                                       |
+| :----: | :--------------------------------------------------------------------------- |
+|  **1** | Base installation: Docker, swap, system tuning, permissions, and image build |
+|  **2** | Install MT4, MT5, or both                                                    |
+|  **3** | Install Expert Advisors and custom indicators                                |
+|  **4** | Status and diagnostics                                                       |
+|  **5** | Service operations: start, stop, and restart                                 |
+|  **6** | Maintenance: backups, rebuilds, and logs                                     |
+|  **0** | Exit                                                                         |
 
-> 💡 **Note:** The base installation prepares Docker, configures swap space, generates configuration files, builds the container image, and starts the required services.
+> 💡 **Tip:** Start with Option 1 to prepare the environment. Then install the required terminal(s) using Option 2.
+
+*Menu descriptions are based on the documented installer workflow. Confirm that the option numbers match the current script before publishing changes.*
+
+---
 
 ## ⚙️ Configuration
 
-The installer supports environment variables to customize your deployment:
+The installer supports environment variables for customizing the deployment.
 
-| **Variable**   | **Default**                  | **Description**                                |
-| -------------- | ---------------------------- | ---------------------------------------------- |
-| `APP_DIR`      | `/opt/mt-docker`             | Application installation directory             |
-| `SSH_PORT`     | Auto-detected, fallback `22` | SSH port used in access instructions           |
-| `ZIP_URL`      | Configured download URL      | Source URL for the terminal installer archive  |
-| `ZIP_PASSWORD` | Configured default           | Password used to extract the installer archive |
+| Variable       | Default               | Description                                |
+| :------------- | :-------------------- | :----------------------------------------- |
+| `APP_DIR`      | `/opt/mt-docker`      | Installation directory on the host         |
+| `SSH_PORT`     | `22` or auto-detected | SSH port used in connection instructions   |
+| `ZIP_URL`      | Preconfigured URL     | Download URL for the installer archive     |
+| `ZIP_PASSWORD` | `123456`              | Password used to extract the setup archive |
 
-### Example Custom Installation
+### Custom Installation Example
 
 ```bash
 sudo env \
@@ -97,15 +134,17 @@ sudo env \
   bash install-mt-docker.sh
 ```
 
-> 🔧 **Tip:** If you need to use a different terminal installer archive, configure `ZIP_URL` and `ZIP_PASSWORD` before running the installer.
+**Security note:** If the archive uses a default extraction password, consider replacing it with a strong, unique value when supported by the installer. Do not commit credentials, private URLs, or other secrets to the repository.
+
+---
 
 ## 🌐 Accessing MetaTrader via noVNC
 
-After the base installation, the installer displays the VNC password and the SSH tunnel command.
+After the base installation, use the generated VNC password and connection instructions provided by the installer.
 
-### 1. Open an SSH Tunnel
+### 1. Create an SSH Tunnel
 
-Run this command on your **local computer**, replacing `SSH_PORT` and `VPS_IP` with your VPS details:
+Run this command on your local computer, replacing `SSH_PORT` and `VPS_IP` with your server's SSH port and IP address.
 
 ```bash
 ssh -N -p SSH_PORT \
@@ -113,9 +152,9 @@ ssh -N -p SSH_PORT \
   root@VPS_IP
 ```
 
-> ⚠️ **Important:** Keep the SSH session open while using the browser interface.
+Keep the SSH session open while using the browser interface.
 
-### 2. Open the Browser Interface
+### 2. Open the Web Interface
 
 Navigate to:
 
@@ -123,86 +162,174 @@ Navigate to:
 http://localhost:6080/vnc.html?autoconnect=1&resize=scale
 ```
 
-Enter the VNC password provided during installation.
+Enter the VNC password generated during installation.
 
-> 🔒 **Security Note:** noVNC is bound to the VPS loopback interface by default. Access it through the SSH tunnel instead of exposing port `6080` directly to the internet.
+The configuration described by this project stores the password in the `.env` file under the installation directory, for example:
 
-## 🤖 Installing Expert Advisors and Indicators
+```text
+/opt/mt-docker/.env
+```
 
-Deploy your compiled trading robots and custom indicators through the interactive menu:
+### 🔒 Remote Access Security
+
+* Keep the noVNC service bound to `127.0.0.1` on the VPS.
+* Access the interface through an SSH tunnel.
+* Avoid exposing port `6080` directly to the public internet.
+* Protect `.env` and other files containing credentials.
+* Prefer SSH key authentication and keep the server and Docker packages updated.
+
+> ⚠️ **Important:** The browser URL uses HTTP on localhost because the SSH tunnel encrypts the connection between your computer and the VPS. Do not expose the underlying web service publicly without an appropriately secured remote-access configuration.
+
+---
+
+## 🤖 Installing Expert Advisors & Indicators
+
+Deploy compiled trading algorithms and custom indicators through the interactive management menu.
 
 1. Complete the base installation using **Option 1**.
-2. Install MT4 and/or MT5 using **Option 2**.
-3. Copy your compiled `.ex4` and `.ex5` files into the same directory as `install-mt-docker.sh`.
-4. Select **Option 3 — Install Robots/Indicators**.
-5. Choose the appropriate terminal and file type when prompted.
+2. Install MT4, MT5, or both using **Option 2**.
+3. Prepare the compiled files for deployment:
 
-> 📝 **Tip:** Source files (`.mq4` and `.mq5`) must be compiled in MetaEditor before installation. After installation, find your files in MetaTrader under **Navigator → Experts** or **Navigator → Indicators**.
+   * `.ex4` for MT4.
+   * `.ex5` for MT5.
+4. Place the files in the location expected by the installer.
+5. Select **Option 3** and follow the prompts to choose the destination terminal and file type.
+
+### Supported File Types
+
+| Extension | Purpose                                                            |
+| :-------- | :----------------------------------------------------------------- |
+| `.ex4`    | Compiled MetaTrader 4 Expert Advisors and indicators               |
+| `.ex5`    | Compiled MetaTrader 5 Expert Advisors and indicators               |
+| `.mq4`    | MetaTrader 4 source files; compile in MetaEditor before deployment |
+| `.mq5`    | MetaTrader 5 source files; compile in MetaEditor before deployment |
+
+After deployment, locate the files in MetaTrader under **Navigator → Expert Advisors** or **Navigator → Indicators**, as appropriate.
+
+> 📝 **Tip:** Keep backups of your EAs, indicators, set files, and configuration data before performing maintenance or rebuilding the container.
+
+---
 
 ## 🏛️ Architecture Overview
 
-The project combines containerization, Windows compatibility, process supervision, and browser-based desktop access:
+MetaTrader Docker combines containerization, Windows application compatibility, virtual display services, and process supervision.
 
 ```text
 Linux VPS
-└── Docker
-    └── MetaTrader Container
-        ├── Wine
-        │   ├── MT4 Environment
-        │   └── MT5 Environment
-        ├── Xvfb — Virtual Display
-        ├── Fluxbox — Window Manager
-        ├── x11vnc — VNC Server
-        ├── noVNC — Browser Access
-        └── Supervisor — Process Management
+└── Ubuntu Server (Headless)
+    └── Docker
+        └── MetaTrader Container
+            ├── Wine
+            │   ├── MT4 Environment (32-bit)
+            │   └── MT5 Environment (64-bit)
+            ├── Xvfb
+            │   └── Virtual Display
+            ├── Fluxbox
+            │   └── Lightweight Window Manager
+            ├── x11vnc
+            │   └── VNC Server
+            ├── noVNC
+            │   └── Browser-Based Access
+            └── Supervisor
+                └── Background Process Management
 ```
 
-> 💾 *Terminal environments and logs are persisted outside the container using mounted volumes.*
+### Component Overview
+
+| Component      | Role                                                    |
+| :------------- | :------------------------------------------------------ |
+| **Docker**     | Provides the containerized runtime environment.         |
+| **Wine**       | Runs compatible Windows applications on Linux.          |
+| **Xvfb**       | Provides a virtual display without a physical monitor.  |
+| **Fluxbox**    | Provides a lightweight window manager.                  |
+| **x11vnc**     | Shares the virtual desktop over VNC.                    |
+| **noVNC**      | Makes the VNC desktop accessible through a web browser. |
+| **Supervisor** | Manages configured application and service processes.   |
+
+Terminal data and other configured files are intended to persist outside the container through host-mounted volumes, including the project's `data/` directory where applicable.
+
+---
 
 ## 🛠️ Management & Diagnostics
 
-The interactive menu provides access to common administration tasks:
+The interactive management menu is the recommended way to perform routine operations.
 
-* 🔍 Check container and terminal status.
-* 📊 Inspect running processes and resource usage.
-* 🔄 Start, stop, and restart services.
-* 💾 Access backup and maintenance tools.
-* 📜 Update components and inspect application logs.
-
-### Direct Docker Commands
+For direct Docker administration, use the following commands from the installation directory.
 
 ```bash
 cd /opt/mt-docker
 
+# Inspect container status
 docker compose ps
-docker compose logs --tail 100
+
+# Follow container logs
+docker compose logs --tail 100 -f
+
+# Monitor resource consumption
 docker stats
 ```
 
+### Common Maintenance Tasks
+
+* Check the container status before troubleshooting.
+* Review logs when a terminal or service fails to start.
+* Monitor RAM and CPU consumption during trading activity.
+* Create backups before rebuilding or updating the environment.
+* Verify that terminal data remains available after container restarts.
+
+> 💡 **Note:** Direct Docker commands may not perform the additional cleanup or validation implemented by the project's management script. Use the menu when available.
+
+---
+
 ## 🛡️ Security Best Practices
 
-The project includes several security measures:
+MetaTrader Docker is designed to support a reduced-privilege container configuration and restricted remote desktop access.
 
-* 🛡️ Unnecessary Linux capabilities are dropped.
-* 🔒 The `no-new-privileges` flag is enabled.
-* 🌐 VNC access is restricted to the loopback interface by default.
-* 🔑 VNC credentials are stored in `.env` with restrictive file permissions.
-* 📂 Persistent application data is separated from the container image.
+Where configured, the deployment uses controls such as:
 
-**Recommended Practices:**
+* 🛡️ **Reduced Capabilities:** Drop unnecessary Linux capabilities using `cap_drop: [ALL]`.
+* 🔒 **Privilege Escalation Restrictions:** Apply `no-new-privileges: true`.
+* 🌐 **Restricted Remote Access:** Bind the VNC/noVNC service to loopback rather than a public interface.
+* 🔑 **Credential Protection:** Restrict access to `.env` and other sensitive configuration files.
+* 📂 **Data Separation:** Keep persistent application data in host-mounted directories.
 
-* Keep `.env` files and credentials out of public version control.
-* Use SSH key authentication where possible.
-* Keep your VPS operating system and Docker installation updated.
-* Never expose noVNC or management ports directly to the public internet.
-* Protect trading account credentials and backup files.
+### Recommended Practices
+
+1. Use SSH keys and disable password-based SSH authentication where practical.
+2. Keep Ubuntu, Docker, and project dependencies updated.
+3. Restrict inbound firewall rules to the ports you actually need.
+4. Never commit `.env` files, passwords, API keys, or private download credentials.
+5. Review container privileges and volume permissions before deploying to production.
+6. Back up persistent data and test restoration procedures.
+7. Avoid exposing remote desktop services directly to the public internet.
+
+**Security considerations:** Container hardening reduces certain risks but does not eliminate them. Review the actual Docker Compose configuration, published ports, mounted directories, and host privileges before production use.
+
+---
 
 ## 📜 License
 
-Licensed under the **Apache License 2.0**. See the [`LICENSE`](LICENSE) file for details.
+This project is distributed under the **Apache License 2.0**.
+
+See the [`LICENSE`](LICENSE) file for the complete license terms.
+
+---
 
 ## ⚠️ Disclaimer
 
-*This project is an unofficial solution and is not affiliated with, endorsed by, or supported by MetaQuotes or any broker.*
+MetaTrader Docker is an independent open-source utility. It is **not affiliated with, endorsed by, or supported by MetaQuotes Ltd. or any brokerage firm**.
 
-> 💡 **Financial Risk Warning:** This software is provided *"AS IS"*, without warranties of any kind. Trading involves financial risk and can result in the loss of capital. Always test your strategies in a demo account before trading with real funds.
+MetaTrader is a trademark of its respective owner. Users are responsible for complying with applicable software licenses and broker requirements.
+
+### Financial Risk Warning
+
+This software is provided **"AS IS"**, without warranties of any kind, to the extent permitted by applicable law.
+
+Automated trading involves substantial financial risk and may result in the loss of capital. Running a trading terminal continuously does not guarantee uptime, successful order execution, profitability, or protection against market and connectivity risks.
+
+Always test your Expert Advisors and trading strategies on a demo account before considering live deployment.
+
+---
+
+**Built for lightweight, manageable, and browser-accessible MetaTrader deployments on Linux VPS environments.**
+****
