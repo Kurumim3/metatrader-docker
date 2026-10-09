@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Container Entrypoint Script
+# =============================================================================
+set -euo pipefail
+source /opt/mt/lib/common.sh
+COMP="entrypoint"
+
+log INFO "$COMP" "Starting container runtime (uid=$(id -u))"
+
+# Verify volume mount write permissions
+for d in /home/mt/prefix/mt4 /home/mt/prefix/mt5 /home/mt/logs; do
+  [[ -w "$d" ]] || die "$COMP" "Missing write permission on $d. On host run: chown -R 1000:1000 data/"
+done
+
+# Validate VNC credentials
+[[ -n "${VNC_PASSWORD:-}" ]] || die "$COMP" "VNC_PASSWORD is unset. Run scripts/setup-host.sh"
+(( ${#VNC_PASSWORD} >= 8 )) || die "$COMP" "VNC_PASSWORD must contain at least 8 characters"
+
+if (( ${#VNC_PASSWORD} > 8 )); then
+  log WARN "$COMP" "VNC_PASSWORD exceeds 8 characters; x11vnc only evaluates the first 8 characters"
+  VNC_PASSWORD="${VNC_PASSWORD:0:8}"
+fi
+
+( umask 077; printf '%s\n' "$VNC_PASSWORD" > /tmp/vnc.pass )
+unset VNC_PASSWORD
+
+# Clean up stale locks and process descriptors
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 /tmp/supervisor.sock /tmp/supervisord.pid
+
+# Check available memory allocation
+LIMIT="$(mem_limit_mb)"
+log INFO "$COMP" "Effective memory limit: ${LIMIT}MB"
+(( LIMIT >= 700 )) || log WARN "$COMP" "Memory < 700MB: MetaTrader 5 and Wine runtime may experience OOM errors"
+
+export RESOLUTION="${RESOLUTION:-1024x600x16}"
+log INFO "$COMP" "Launching supervisord process supervisor (resolution: $RESOLUTION)"
+exec supervisord -c /etc/supervisor/mt.conf
