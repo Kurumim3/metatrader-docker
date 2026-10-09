@@ -1,0 +1,59 @@
+name: mt-docker
+
+services:
+  mt:
+    build:
+      context: .
+      args:
+        WINE_BRANCH: ${WINE_BRANCH:-stable}
+    image: ${IMAGE_NAME:-mt-trader:local}
+    container_name: ${CONTAINER_NAME:-mt}
+    hostname: mt-docker
+    restart: unless-stopped
+    init: true
+    stop_signal: SIGTERM
+    stop_grace_period: 60s
+
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${NOVNC_PORT:-6080}:6080"
+
+    environment:
+      TZ: "${TZ:-America/Sao_Paulo}"
+      RESOLUTION: "${RESOLUTION:-1024x600x16}"
+      VNC_PASSWORD: "${VNC_PASSWORD:?VNC_PASSWORD is unset; execute scripts/setup-host.sh}"
+      EA_DEPS_MT4: "${EA_DEPS_MT4:-corefonts vcrun2019 winhttp gdiplus msxml6}"
+      EA_DEPS_MT5: "${EA_DEPS_MT5:-corefonts vcrun2019 winhttp gdiplus msxml6}"
+      MT4_ARCH: "${MT4_ARCH:-win32}"
+
+    volumes:
+      - ./data/prefix-mt4:/home/mt/prefix/mt4
+      - ./data/prefix-mt5:/home/mt/prefix/mt5
+      - ./data/logs:/home/mt/logs
+      - ./data/installers:/home/mt/installers:ro
+
+    shm_size: ${SHM_SIZE:-128m}
+    mem_limit: ${MEM_LIMIT:-800m}
+    memswap_limit: ${MEMSWAP_LIMIT:-2800m}
+    cpus: ${CPUS:-1.0}
+    pids_limit: ${PIDS_LIMIT:-1024}
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test: ["CMD", "bash", "-c", "xdpyinfo -display :99 >/dev/null 2>&1 && (exec 3<>/dev/tcp/127.0.0.1/5900) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/6080) 2>/dev/null"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
