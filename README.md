@@ -206,4 +206,4 @@ Apache License 2.0 — see [LICENSE](LICENSE).
 ## Disclaimer
 
 Software provided **"AS IS"**, without warranties. Automated trading can cause
-**total loss of capital**. Use at your own risk. Always test on a demo account.****
+**total loss of capital**. Use at your own risk. Always test on a demo account.**
