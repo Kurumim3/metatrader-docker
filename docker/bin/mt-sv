@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-# =============================================================================
-# Supervisorctl Management Wrapper
-# =============================================================================
-exec supervisorctl -s unix:///tmp/supervisor.sock "$@"
