@@ -1,0 +1,13 @@
+# Dados gerados em runtime na VPS (nunca versionar)
+data/
+backups/
+robos/
+.env
+
+# Logs
+*.log
+
+# Sistema
+.DS_Store
+Thumbs.db
+*.swp
