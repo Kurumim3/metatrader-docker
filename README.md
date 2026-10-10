@@ -34,6 +34,8 @@ sudo bash install-mt-docker.sh
 
 After the first run, the shortcut **`sudo mt-menu`** becomes available.
 
+That's it — the script downloads the **official MetaQuotes installers** and runs everything inside a Docker container.
+
 ---
 
 ## Interactive Menu
@@ -82,7 +84,8 @@ Change it anytime via menu **6 → 6 (Change VNC password)**.
 
 ## Configuration (`.env`)
 
-Copy the template and adjust:
+The script works **without any `.env`** — it uses the official MetaQuotes installers by default.
+If you want to customize, copy the template:
 
 ```bash
 cp .env.example .env
@@ -92,13 +95,7 @@ cp .env.example .env
 |---|---|---|
 | `APP_DIR` | `/opt/mt-docker` | Base install directory on the host |
 | `SSH_PORT` | auto | SSH port used in access instructions |
-| `ZIP_URL` | empty | URL of the ZIP containing broker installers |
-| `ZIP_PASSWORD` | empty | ZIP password |
-| `INSTALADOR_MT4` | `gomarketsmu4setup.exe` | MT4 `.exe` name inside the ZIP |
-| `INSTALADOR_MT5` | `gomarketsmu5setup.exe` | MT5 `.exe` name inside the ZIP |
-| `WINE_VERSION` | `10.0.0.0~jammy-1` | Wine version (10.x recommended) |
-
-If `ZIP_URL` is empty, menu 2 falls back to the **official MetaQuotes installers** automatically.
+| `WINE_VERSION` | `10.0.0.0~jammy-1` | Wine version — **keep 10.x** (Wine 11 breaks the official MetaQuotes installer with *"A debugger has been found running"*) |
 
 Example of a custom install:
 
@@ -106,8 +103,6 @@ Example of a custom install:
 sudo env \
   APP_DIR=/opt/mt-docker \
   SSH_PORT=2222 \
-  ZIP_URL="https://..." \
-  ZIP_PASSWORD="..." \
   bash install-mt-docker.sh
 ```
 
@@ -195,6 +190,7 @@ Additional recommendations:
 ## Limitations
 
 - **Not affiliated** with MetaQuotes or any broker.
+- Only **official MetaQuotes installers** are supported (no broker-specific installers).
 - Running the terminal 24/7 **does not guarantee** uptime, correct order execution, or profit.
 - Brokers may block or limit access via Wine — test with yours first.
 - Running MT4 and MT5 concurrently needs more RAM (≥ 2 GB recommended).
