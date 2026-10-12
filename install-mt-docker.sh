@@ -33,8 +33,8 @@
 #   (WINE_VERSION). / A versão do Wine é escolhida na instalação base e fica
 #   salva em $APP_DIR/.env (WINE_VERSION).
 #
-# Bots/indicators folder ("robos") is created NEXT TO the script on first run:
-# A pasta "robos" é criada AO LADO do script na primeira execução:
+# Bots/indicators folder ("EAs") is created in $APP_DIR/EAs on first run:
+# A pasta "EAs" (Expert Advisors/robôs) é criada em $APP_DIR/EAs na primeira execução:
 #   MT4/Experts  MT4/Indicators  (.ex4 / .mq4)
 #   MT5/Experts  MT5/Indicators  (.ex5 / .mq5)
 #   sets/                        (.set for MT4 and MT5 / .set de MT4 e MT5)
@@ -91,10 +91,10 @@ MENU_BIN="/usr/local/bin/mt-menu"
 SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 
-# "robos" and "backups" folders live NEXT TO where the script was run (easy to find)
+# "EAs" and "backups" folders live in $APP_DIR by default (predictable path)
 # and are remembered in $APP_DIR/.robos_dir so the "mt-menu" shortcut uses the same one.
 # To move them: set ROBOS_DIR=/path and/or BACKUP_DIR=/path when running the script.
-# Pastas "robos" e "backups": ficam AO LADO de onde o script foi executado e são
+# Pastas "EAs" e "backups": ficam em $APP_DIR por padrão (caminho previsível) e são
 # lembradas em $APP_DIR/.robos_dir (usadas também pelo atalho "mt-menu").
 resolver_robos_dir() {
   local salvo=""
@@ -102,10 +102,10 @@ resolver_robos_dir() {
     [[ -f "$APP_DIR/.robos_dir" ]] && salvo="$(<"$APP_DIR/.robos_dir")"
     if [[ -n "$salvo" ]]; then
       ROBOS_DIR="$salvo"
-    elif [[ "$SCRIPT_DIR" == "$APP_DIR"/* ]]; then
-      ROBOS_DIR="$APP_DIR/robos"
     else
-      ROBOS_DIR="$SCRIPT_DIR/robos"
+      # Predictable: always inside $APP_DIR, no matter where the script was cloned/run.
+      # Previsível: sempre dentro de $APP_DIR, não importa onde o script foi clonado/executado.
+      ROBOS_DIR="$APP_DIR/EAs"
     fi
   fi
   ROBOS_DIR="$(realpath -m "$ROBOS_DIR" 2>/dev/null || echo "$ROBOS_DIR")"
@@ -372,7 +372,7 @@ env_set() { # env_set KEY VALUE  (safe for any character; normalizes line ending
   (
     umask 077
     tmp="$(mktemp)"
-    { grep -v "^${k}=" "$ENV_FILE" 2>/dev/null | tr -d '\r' || true; } > "$tmp"
+    grep -v "^${k}=" "$ENV_FILE" 2>/dev/null | tr -d '\r' > "$tmp" || true
     printf '%s=%s\n' "$k" "$v" >> "$tmp"
     cat "$tmp" > "$ENV_FILE"
     rm -f "$tmp"
@@ -559,7 +559,7 @@ gerar_arquivos() {
 data/
 backups/
 scripts/
-robos/
+EAs/
 .env
 *.log
 EOF
@@ -1534,8 +1534,7 @@ instalar_terminal() { # instalar_terminal mt4|mt5 [--keep-stopped]
   local local_inst="" cand
   for cand in "$APP_DIR/data/installers/${id}setup.exe" \
               "$APP_DIR/data/installers/${id}.exe" \
-              "$APP_DIR/data/installers/"*${id}*.exe \
-              "$APP_DIR/data/installers/"*.exe; do
+              "$APP_DIR/data/installers/"*${id}*.exe; do
     [[ -f "$cand" ]] || continue
     # For MT4 skip files that look like MT5-only installers if a better name exists
     local_inst="$cand"
@@ -1701,6 +1700,8 @@ mql_dest() { # mql_dest mt4|mt5 Experts|Indicators|Presets
   marker="$host_prefix/.mt_exe_path"
   [[ -s "$marker" ]] || return 1
   exe_c="$(<"$marker")"
+  exe_c="${exe_c//\\//}"                 # backslashes -> slashes
+  exe_c="${exe_c#[A-Za-z]:}"              # drop a leading drive letter (Z:)
   exe_h="${exe_c/#"/home/mt/prefix/$id"/$host_prefix}"
   [[ -f "$exe_h" ]] || return 1
   dir="$(dirname "$exe_h")"
@@ -2168,7 +2169,7 @@ main() {
     guiada|guided)        etapa_guiada ;;
     base)                 etapa_instalar_base ;;
     terminais|terminals)  etapa_instalar_terminais ;;
-    robos|bots)           etapa_instalar_robos ;;
+    robos|bots|eas|ea)    etapa_instalar_robos ;;
     status)               etapa_status ;;
     backup)               need_base && fazer_backup ;;
     idioma|language|lang) escolher_idioma ;;
