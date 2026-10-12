@@ -33,8 +33,8 @@
 #   (WINE_VERSION). / A versão do Wine é escolhida na instalação base e fica
 #   salva em $APP_DIR/.env (WINE_VERSION).
 #
-# Bots/indicators folder ("EAs") is created in $APP_DIR/EAs on first run:
-# A pasta "EAs" (Expert Advisors/robôs) é criada em $APP_DIR/EAs na primeira execução:
+# Bots/indicators folder ("EAs") is created INSIDE the cloned project folder on first run:
+# A pasta "EAs" (Expert Advisors/robôs) é criada DENTRO da pasta do projeto clonado na primeira execução:
 #   MT4/Experts  MT4/Indicators  (.ex4 / .mq4)
 #   MT5/Experts  MT5/Indicators  (.ex5 / .mq5)
 #   sets/                        (.set for MT4 and MT5 / .set de MT4 e MT5)
@@ -91,28 +91,48 @@ MENU_BIN="/usr/local/bin/mt-menu"
 SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 
-# "EAs" and "backups" folders live in $APP_DIR by default (predictable path)
+# "EAs" and "backups" folders live inside the cloned project folder (git root of the script)
 # and are remembered in $APP_DIR/.robos_dir so the "mt-menu" shortcut uses the same one.
 # To move them: set ROBOS_DIR=/path and/or BACKUP_DIR=/path when running the script.
-# Pastas "EAs" e "backups": ficam em $APP_DIR por padrão (caminho previsível) e são
+# Pastas "EAs" e "backups": ficam dentro da pasta do projeto clonado (raiz do git) e são
 # lembradas em $APP_DIR/.robos_dir (usadas também pelo atalho "mt-menu").
 resolver_robos_dir() {
-  local salvo=""
+  local salvo="" base old_robos="" sb="" novo_b
+  # BASE = the cloned project folder (git root of the script, or the script's own folder).
+  # When run through the "mt-menu" copy (inside $APP_DIR) the base is $APP_DIR.
+  # BASE = pasta do projeto clonado (raiz do git do script, ou a pasta do próprio script).
+  # Pelo atalho "mt-menu" (cópia dentro de $APP_DIR) a base é $APP_DIR.
+  if [[ "$SCRIPT_DIR" == "$APP_DIR" || "$SCRIPT_DIR" == "$APP_DIR"/* ]]; then
+    base="$APP_DIR"
+  else
+    base="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+    [[ -n "$base" ]] || base="$SCRIPT_DIR"
+  fi
+
   if [[ -z "${ROBOS_DIR:-}" ]]; then
     [[ -f "$APP_DIR/.robos_dir" ]] && salvo="$(<"$APP_DIR/.robos_dir")"
-    if [[ -n "$salvo" ]]; then
-      ROBOS_DIR="$salvo"
-    else
-      # Predictable: always inside $APP_DIR, no matter where the script was cloned/run.
-      # Previsível: sempre dentro de $APP_DIR, não importa onde o script foi clonado/executado.
-      ROBOS_DIR="$APP_DIR/EAs"
+    # Old versions saved ".../robos" (often in the wrong place, e.g. /home/robos).
+    # Move it to "<base>/EAs" once and use that from now on.
+    # Versões antigas salvavam ".../robos" (às vezes no lugar errado, ex.: /home/robos).
+    # Move uma vez para "<base>/EAs" e passa a usar essa.
+    if [[ -n "$salvo" && "${salvo##*/}" == "robos" ]]; then
+      old_robos="$salvo"
+      if [[ ! -e "$base/EAs" ]] && { [[ ! -d "$salvo" ]] || mv "$salvo" "$base/EAs" 2>/dev/null; }; then
+        salvo="$base/EAs"
+      fi
     fi
+    ROBOS_DIR="${salvo:-$base/EAs}"
   fi
   ROBOS_DIR="$(realpath -m "$ROBOS_DIR" 2>/dev/null || echo "$ROBOS_DIR")"
+
   if [[ -z "${BACKUP_DIR:-}" ]]; then
-    local sb=""
     [[ -f "$APP_DIR/.backup_dir" ]] && sb="$(<"$APP_DIR/.backup_dir")"
-    BACKUP_DIR="${sb:-$(dirname "$ROBOS_DIR")/backups}"
+    # carry the old backups folder along with the migrated bots folder
+    if [[ -n "$old_robos" && "$sb" == "$(dirname "$old_robos")/backups" && ! -e "$base/backups" ]]; then
+      mv "$sb" "$base/backups" 2>/dev/null && sb="$base/backups"
+    fi
+    novo_b="$(dirname "$ROBOS_DIR")/backups"
+    BACKUP_DIR="${sb:-$novo_b}"
   fi
   BACKUP_DIR="$(realpath -m "$BACKUP_DIR" 2>/dev/null || echo "$BACKUP_DIR")"
   if mkdir -p "$APP_DIR" 2>/dev/null; then
