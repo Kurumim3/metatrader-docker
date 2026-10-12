@@ -11,6 +11,9 @@
 # --- Runtime data (created by the installer on the VPS) -----------------
 data/
 backups/
+# EAs / bots / indicators / sets folder (default name)
+EAs/
+# legacy name used by older versions of the script
 robos/
 
 # --- Secrets -------------------------------------------------------------
@@ -32,6 +35,11 @@ docker-compose.yml
 .dockerignore
 docker/
 scripts/
+
+# --- MetaTrader files (never commit compiled bots, indicators or sets) ----
+*.ex4
+*.ex5
+*.set
 
 # --- Logs ----------------------------------------------------------------
 *.log
