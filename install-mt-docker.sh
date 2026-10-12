@@ -770,9 +770,10 @@ load_terminal() {
   case "${1:-}" in
     mt4)
       MT_ID=mt4; MT_NAME="MetaTrader 4"; MT_ARCH="${MT4_ARCH:-win64}"; MT_EXE_NAME="terminal.exe"
-      # Official MetaQuotes mt4setup.exe now installs MT5 (terminal64.exe). Prefer a
-      # broker-provided installer under /home/mt/installers/ (see --installer / host menu).
-      MT_URL="https://download.mql5.com/cdn/web/metaquotes.software.corp/mt4/mt4setup.exe"
+      # The current mt4setup.exe installs MT5; the real MT4 installer is mt4oldsetup.exe
+      # (the same one MetaQuotes' own mt4ubuntu.sh downloads). A broker installer placed
+      # in /home/mt/installers/ still takes priority (see --installer / host menu).
+      MT_URL="https://download.mql5.com/cdn/web/metaquotes.software.corp/mt4/mt4oldsetup.exe"
       MT_DEPS="${EA_DEPS_MT4:-$default_deps}" ;;
     mt5)
       MT_ID=mt5; MT_NAME="MetaTrader 5"; MT_ARCH="win64"; MT_EXE_NAME="terminal64.exe"
@@ -800,8 +801,8 @@ find_exe() {
          -not -ipath '*/windows/*' -print -quit 2>/dev/null || true)"
     if [[ -n "$found" ]]; then
       log WARN install "$(L \
-        "found terminal64.exe instead of terminal.exe — the official MetaQuotes mt4setup.exe now installs MT5. Use a broker MT4 installer (place it in data/installers/ and re-run with --installer)" \
-        "encontrado terminal64.exe em vez de terminal.exe — o mt4setup.exe oficial da MetaQuotes agora instala o MT5. Use um instalador MT4 de corretora (coloque em data/installers/ e rode com --installer)")"
+        "found terminal64.exe instead of terminal.exe — the installer delivered MT5. Use mt4oldsetup.exe or a broker MT4 installer (place it in data/installers/ and re-run with --installer)" \
+        "encontrado terminal64.exe em vez de terminal.exe — o instalador entregou o MT5. Use o mt4oldsetup.exe ou um instalador MT4 de corretora (coloque em data/installers/ e rode com --installer)")"
     fi
   fi
   printf '%s' "$found"
@@ -1090,8 +1091,8 @@ if [[ -z "$EXE" ]]; then
   find "$WINEPREFIX/drive_c" -iname 'terminal*.exe' 2>/dev/null | head -20 >> "$LOG_DIR/setup-$ID.log" || true
   if [[ "$MT_ID" == "mt4" ]]; then
     die "$COMP" "$(L \
-      "terminal.exe not found. The official MetaQuotes mt4setup.exe now installs MT5. Place a real MT4 broker installer in /home/mt/installers/ and re-run: mt-install mt4 --installer /home/mt/installers/YOURFILE.exe (see $LOG_DIR/setup-$ID.log)" \
-      "terminal.exe não encontrado. O mt4setup.exe oficial da MetaQuotes agora instala o MT5. Coloque um instalador real de MT4 de corretora em /home/mt/installers/ e rode: mt-install mt4 --installer /home/mt/installers/SEUARQUIVO.exe (veja $LOG_DIR/setup-$ID.log)")"
+      "terminal.exe not found. The installer may have delivered MT5. Place mt4oldsetup.exe or a real MT4 broker installer in /home/mt/installers/ and re-run: mt-install mt4 --installer /home/mt/installers/YOURFILE.exe (see $LOG_DIR/setup-$ID.log)" \
+      "terminal.exe não encontrado. O instalador pode ter entregado o MT5. Coloque o mt4oldsetup.exe ou um instalador real de MT4 de corretora em /home/mt/installers/ e rode: mt-install mt4 --installer /home/mt/installers/SEUARQUIVO.exe (veja $LOG_DIR/setup-$ID.log)")"
   fi
   die "$COMP" "$(L "$MT_EXE_NAME not found (see $LOG_DIR/setup-$ID.log)" "$MT_EXE_NAME não encontrado (veja $LOG_DIR/setup-$ID.log)")"
 fi
@@ -1549,8 +1550,8 @@ instalar_terminal() { # instalar_terminal mt4|mt5 [--keep-stopped]
     if confirm "$(T "Reinstall (--force)?" "Reinstalar (--force)?")"; then args+=(--force); else return 0; fi
   fi
 
-  # Prefer a local broker installer from data/installers/ (especially important for MT4:
-  # official MetaQuotes mt4setup.exe currently ships MT5).
+  # Prefer a local installer from data/installers/ (e.g. a broker's); otherwise the
+  # official MetaQuotes download is used (mt4oldsetup.exe for MT4).
   local local_inst="" cand
   for cand in "$APP_DIR/data/installers/${id}setup.exe" \
               "$APP_DIR/data/installers/${id}.exe" \
@@ -1564,8 +1565,6 @@ instalar_terminal() { # instalar_terminal mt4|mt5 [--keep-stopped]
     info "$(T "Using local installer: $local_inst" "Usando instalador local: $local_inst")"
     # Path inside the container (volume mount is read-only)
     args+=(--installer "/home/mt/installers/$(basename "$local_inst")")
-  elif [[ "$id" == "mt4" ]]; then
-    warn "$(T "No local MT4 installer found in $APP_DIR/data/installers/. Official MetaQuotes mt4setup.exe now installs MT5 — place a broker MT4 .exe there for a real MT4 install." "Nenhum instalador local de MT4 em $APP_DIR/data/installers/. O mt4setup.exe oficial da MetaQuotes agora instala o MT5 — coloque um .exe de corretora lá para instalar o MT4 de verdade.")"
   fi
 
   echo
