@@ -89,6 +89,22 @@ sudo mt-menu
 
 ---
 
+## 🤖 Where to Put Your EAs, Indicators and Sets
+
+On the first run, the installer creates an **`EAs/`** folder inside the cloned project (`metatrader-docker/EAs`). Put your files in the matching subfolder, then run menu option **3** to copy them into the terminals:
+
+| **Folder** | **Files** |
+| :--- | :--- |
+| `EAs/MT4/Experts` | MT4 Expert Advisors (`.ex4`) |
+| `EAs/MT4/Indicators` | MT4 indicators (`.ex4`) |
+| `EAs/MT5/Experts` | MT5 Expert Advisors (`.ex5`) |
+| `EAs/MT5/Indicators` | MT5 indicators (`.ex5`) |
+| `EAs/sets` | `.set` files (MT4 and MT5) |
+
+Backups are saved in `backups/`, next to `EAs/`. Both folders are ignored by git.
+
+---
+
 ## 🌐 Accessing MetaTrader Through noVNC
 
 For security, noVNC is bound to `127.0.0.1` on the VPS and is not intended to be exposed directly to the public internet.
