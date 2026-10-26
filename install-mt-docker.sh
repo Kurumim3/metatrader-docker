@@ -286,13 +286,21 @@ require_root() {
 }
 
 pause() {
-  echo
-  read -rp "  ${C_DIM}$(T "ENTER to go back..." "ENTER para voltar...")${C_RESET} " _ || true
+  local __rc
+  while true; do
+    echo
+    __rc=0
+    read -rp "  ${C_DIM}$(T "ENTER to go back..." "ENTER para voltar...")${C_RESET} " _ || __rc=$?
+    # Ctrl+C / signal → just re-prompt (do not leave the menu or crash)
+    (( __rc > 128 )) && { echo; continue; }
+    break
+  done
 }
 
 confirm() {
-  local ans
-  read -rp "  $1 $(T "[y/N]" "[s/N]") " ans || true
+  local ans __rc=0
+  read -rp "  $1 $(T "[y/N]" "[s/N]") " ans || __rc=$?
+  (( __rc > 128 )) && return 1
   ans="${ans,,}"
   [[ "$ans" == "s" || "$ans" == "sim" || "$ans" == "y" || "$ans" == "yes" ]]
 }
@@ -306,6 +314,21 @@ ask() { # ask VAR "prompt"
   echo
   (( __rc > 128 )) && return 2
   return 1
+}
+
+# Wait for ENTER while the user copies text. Ctrl+C only re-prompts (never exits).
+# Aguarda ENTER enquanto o usuário copia. Ctrl+C só reexibe o prompt (nunca sai).
+aguardar_copia() {
+  local __rc msg
+  msg="${1:-$(T "Copy the lines above (select with the mouse). Ctrl+C here does nothing — press ENTER when done." "Copie as linhas acima (selecione com o mouse). Ctrl+C aqui não faz nada — ENTER quando terminar.")}"
+  while true; do
+    echo
+    echo "  ${C_DIM}${msg}${C_RESET}"
+    __rc=0
+    read -rp "  ${C_BOLD}$(T "ENTER to continue..." "ENTER para continuar...")${C_RESET} " _ || __rc=$?
+    (( __rc > 128 )) && { echo; continue; }
+    break
+  done
 }
 
 # Ctrl+C doesn't close the menu: it only interrupts the current task
@@ -507,6 +530,17 @@ mostrar_acesso() {
   echo "    ${C_CYAN}http://localhost:6080/vnc.html?autoconnect=1&resize=scale${C_RESET}"
   echo
   echo "  ${C_DIM}$(T "Tip: keep the tunnel terminal open while you use noVNC." "Dica: o terminal do túnel precisa ficar aberto enquanto você usa o noVNC.")${C_RESET}"
+}
+
+# Clear the screen and show ONLY the access block, then wait for ENTER (Ctrl+C safe).
+# Limpa a tela e mostra SÓ o bloco de acesso, depois aguarda ENTER (seguro com Ctrl+C).
+mostrar_acesso_limpo() {
+  clear 2>/dev/null || true
+  echo
+  mostrar_acesso
+  echo
+  rule
+  aguardar_copia
 }
 
 # -----------------------------------------------------------------------------
@@ -1520,7 +1554,9 @@ etapa_instalar_base() {
   echo
   ok "${C_BOLD}$(T "Base installation finished" "Instalação base concluída")${C_RESET}"
   echo
-  mostrar_acesso
+  # Clear and show only access info so the user can copy without scrolling through logs.
+  # Limpa e mostra só o acesso para o usuário copiar sem rolar logs.
+  mostrar_acesso_limpo
   echo
   echo "  ${C_BOLD}$(T "Next step:" "Próximo passo:")${C_RESET} $(T "option 2 (install MT4/MT5), then option 3 (bots)." "opção 2 (instalar MT4/MT5), depois opção 3 (robôs).")"
   echo "  ${C_DIM}$(T "Shortcut to come back to this menu: sudo mt-menu" "Atalho para voltar a este menu: sudo mt-menu")${C_RESET}"
@@ -1688,12 +1724,12 @@ etapa_instalar_terminais() {
   # tunnel and watch noVNC without interrupting the guided flow (or any install).
   # Mostra o acesso ANTES da instalação longa para o usuário abrir o túnel SSH
   # e acompanhar pelo noVNC sem interromper a instalação guiada (ou qualquer instalação).
+  clear 2>/dev/null || true
+  echo
+  info "$(T "Open the SSH tunnel NOW if you want to watch the installer through noVNC. The install continues here; you do not need option 7." "Abra o túnel SSH AGORA se quiser acompanhar o instalador pelo noVNC. A instalação continua aqui; não precisa da opção 7.")"
   echo
   mostrar_acesso
-  echo
-  info "$(T "Open the SSH tunnel above NOW if you want to watch the installer through noVNC. The install continues here; you do not need option 7." "Abra o túnel SSH acima AGORA se quiser acompanhar o instalador pelo noVNC. A instalação continua aqui; não precisa da opção 7.")"
-  echo
-  read -rp "  ${C_DIM}$(T "ENTER when ready to choose which terminal to install..." "ENTER quando estiver pronto para escolher qual terminal instalar...")${C_RESET} " _ || true
+  aguardar_copia "$(T "Copy the tunnel command / password above (mouse select). Ctrl+C here does nothing — ENTER when ready to install." "Copie o comando do túnel / senha acima (selecione com o mouse). Ctrl+C aqui não faz nada — ENTER quando estiver pronto para instalar.")"
 
   echo
   echo "  ${C_BOLD}$(T "Which terminal to install?" "Qual terminal instalar?")${C_RESET} ${C_DIM}($(T "local installer in data/installers/ preferred; else MetaQuotes" "preferência: instalador local em data/installers/; senão MetaQuotes"))${C_RESET}"
@@ -2089,9 +2125,10 @@ etapa_manutencao() {
 }
 
 etapa_acesso() {
-  title "$(T "7 · How to access" "7 · Como acessar")"
   need_base || return 1
-  mostrar_acesso
+  # Clear + only access block so copying is easy; Ctrl+C safe while waiting.
+  # Limpa + só o bloco de acesso para facilitar a cópia; Ctrl+C seguro na espera.
+  mostrar_acesso_limpo
 }
 
 # -----------------------------------------------------------------------------
