@@ -940,8 +940,8 @@ ARG WINE_BRANCH=stable
 # Pinned Wine version: the official MetaQuotes installer fails on Wine 11
 # ("A debugger has been found running"). Empty = always the latest.
 ARG WINE_VERSION=10.0.0.0~jammy-1
-# Use a recent winetricks so vcrun2019 / Microsoft redistributable SHA256 matches
-ARG WINETRICKS_VERSION=master
+# Pin Winetricks to a tagged release for reproducible builds; update deliberately after testing.
+ARG WINETRICKS_VERSION=20260125
 ARG MT_UID=1000
 ARG MT_GID=1000
 
@@ -1601,14 +1601,22 @@ if (( SWAP_TARGET > 0 && SWAP_MB < SWAP_TARGET - 100 )); then
     log WARN "$(L "/swapfile is already active but small (${SWAP_MB}MB); not recreating it while in use" "/swapfile já está ativo mas é pequeno (${SWAP_MB}MB); não vou recriá-lo em uso")"
   else
     log INFO "$(L "creating ${NEED}MB of swap" "criando swap de ${NEED}MB")"
-    [[ -f /swapfile ]] || make_swapfile "$NEED"
+    # An inactive existing file may be stale/undersized. Recreate it; never
+    # remove or truncate /swapfile while it is active (checked above).
+    if [[ -f /swapfile ]]; then rm -f /swapfile; fi
     SWAP_OK=0
-    if swapon /swapfile 2>/dev/null; then
+    if make_swapfile "$NEED" && swapon /swapfile 2>/dev/null; then
       SWAP_OK=1
     else
-      # fallocate-made swapfiles don't work on some filesystems: retry with dd
-      make_swapfile "$NEED" dd
-      if swapon /swapfile 2>/dev/null; then SWAP_OK=1; else log WARN "$(L "swapon failed (OpenVZ/LXC?)" "swapon falhou (OpenVZ/LXC?)")"; fi
+      # fallocate-made swapfiles don't work on some filesystems: retry with dd.
+      swapoff /swapfile >/dev/null 2>&1 || true
+      rm -f /swapfile
+      if make_swapfile "$NEED" dd && swapon /swapfile 2>/dev/null; then
+        SWAP_OK=1
+      else
+        rm -f /swapfile
+        log WARN "$(L "could not create/activate swapfile (OpenVZ/LXC or unsupported filesystem?)" "não foi possível criar/ativar swapfile (OpenVZ/LXC ou sistema de arquivos incompatível?)")"
+      fi
     fi
     # only persist in fstab when swap really works (a broken entry only causes boot noise)
     if (( SWAP_OK )); then
@@ -1701,22 +1709,28 @@ if [[ -r "$ROOT/.lang" ]]; then LANG_UI="$(<"$ROOT/.lang")"; fi
 L() { if [[ "$LANG_UI" == "pt" ]]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
 log() { echo "$(date '+%Y-%m-%dT%H:%M:%S%z') [$1] [backup] ${*:2}"; }
 
-# Folder: BACKUP_DIR > .backup_dir file (written by the menu) > $ROOT/backups
-# BACKUP_KEEP=N keeps only the N most recent; default 0 = never delete anything (delete by hand).
 KEEP="${BACKUP_KEEP:-0}"
+[[ "$KEEP" =~ ^[0-9]+$ ]] || { log ERROR "$(L "BACKUP_KEEP must be a non-negative integer" "BACKUP_KEEP deve ser um inteiro não negativo")"; exit 1; }
 DEST="${BACKUP_DIR:-}"
 if [[ -z "$DEST" && -s "$ROOT/.backup_dir" ]]; then DEST="$(<"$ROOT/.backup_dir")"; fi
 DEST="${DEST:-$ROOT/backups}"
-mkdir -p "$DEST"
+mkdir -p -- "$DEST"
+[[ -d "$DEST" && -w "$DEST" ]] || { log ERROR "$(L "backup destination is not writable" "destino do backup não permite gravação")"; exit 1; }
 TS="$(date +%Y%m%d-%H%M%S)"
 OUT="$DEST/mt-backup-$TS.tar.gz"
+TMP_OUT="$(mktemp "$DEST/.mt-backup-$TS.XXXXXX.partial")"
+TARERR="$(mktemp)"
+cleanup() { [[ -z "${TMP_OUT:-}" ]] || rm -f -- "$TMP_OUT"; rm -f -- "$TARERR"; }
+trap cleanup EXIT INT TERM
 
 NEED="$(du -sm data 2>/dev/null | cut -f1 || true)"; NEED="${NEED:-0}"
 FREE="$(df -Pm "$DEST" | awk 'NR==2{print $4}')"; FREE="${FREE:-0}"
-(( FREE > NEED / 2 )) || { log ERROR "$(L "not enough disk space" "espaço insuficiente")"; exit 1; }
+# Worst-case archives can be close to the uncompressed size. Keep 128 MiB headroom.
+if (( FREE < NEED + 128 )); then
+  log ERROR "$(L "insufficient free space: ${FREE}MB available; data uses ${NEED}MB and 128MB safety margin is required" "espaço insuficiente: ${FREE}MB livres; dados usam ${NEED}MB e é necessária margem de segurança de 128MB")"
+  exit 1
+fi
 
-# drive_c (terminal, account, EAs) + Wine registry + installer markers, so the
-# backup restores a complete terminal even after it was uninstalled.
 TARGETS=()
 for p in prefix-mt4 prefix-mt5; do
   [[ -d "data/$p/drive_c" ]] || continue
@@ -1726,31 +1740,43 @@ for p in prefix-mt4 prefix-mt5; do
   done
 done
 if ((${#TARGETS[@]} == 0)); then
-  log WARN "$(L "no prefix found; backup skipped" "nenhum prefixo encontrado; backup ignorado")"
-  exit 0
+  log ERROR "$(L "no prefix found; refusing to report an empty backup as successful" "nenhum prefixo encontrado; não vou declarar backup vazio como sucesso")"
+  exit 1
 fi
 
 umask 077
 log INFO "backup → $OUT (${TARGETS[*]})"
-TARERR="$(mktemp)"
-rc=0
-tar -C data -czf "$OUT" \
-    --exclude='Tester' --exclude='tester' \
-    --ignore-failed-read \
-    "${TARGETS[@]}" 2>"$TARERR" || rc=$?
-if (( rc == 1 )); then log WARN "$(L "files changed while being copied" "arquivos mudaram durante a cópia")"; rc=0; fi
-if (( rc != 0 )); then
-  log ERROR "$(L "tar failed" "tar falhou")"; tail -n 5 "$TARERR" >&2 || true
-  rm -f "$OUT" "$TARERR"; exit "$rc"
+# Any tar warning/error is treated as failure: a partial backup must never be published.
+if ! tar -C data -czf "$TMP_OUT" --exclude='Tester' --exclude='tester' "${TARGETS[@]}" 2>"$TARERR"; then
+  log ERROR "$(L "tar failed; incomplete archive discarded" "tar falhou; arquivo incompleto descartado")"
+  tail -n 10 "$TARERR" >&2 || true
+  exit 1
 fi
-rm -f "$TARERR"
-
+if ! gzip -t "$TMP_OUT" || ! tar -tzf "$TMP_OUT" >/dev/null; then
+  log ERROR "$(L "archive integrity validation failed" "falha na validação de integridade do arquivo")"
+  tail -n 10 "$TARERR" >&2 || true
+  exit 1
+fi
+[[ -s "$TMP_OUT" ]] || { log ERROR "$(L "archive is empty" "arquivo vazio")"; exit 1; }
+chmod 600 "$TMP_OUT"
+# Avoid overwriting a same-second backup; append a collision-safe suffix if needed.
+if [[ -e "$OUT" ]]; then OUT="$DEST/mt-backup-$TS-$(date +%N).tar.gz"; fi
+mv -- "$TMP_OUT" "$OUT"
+TMP_OUT=""
 chown 1000:1000 "$OUT" 2>/dev/null || true
 chmod 600 "$OUT"
+if ! (cd "$DEST" && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256"); then
+  rm -f -- "$OUT" "$OUT.sha256"
+  log ERROR "$(L "could not write backup checksum; backup discarded" "não foi possível gravar checksum; backup descartado")"
+  exit 1
+fi
+chmod 600 "$OUT.sha256"
 log INFO "ok: $(du -h "$OUT" | cut -f1)  $OUT"
 if (( KEEP > 0 )); then
-  ls -1t "$DEST"/mt-backup-*.tar.gz 2>/dev/null | tail -n +"$((KEEP + 1))" | while read -r old; do
-    rm -f -- "$old"; log INFO "$(L "removed old backup" "removido antigo"): $old"
+  mapfile -t OLD_BACKUPS < <(find "$DEST" -maxdepth 1 -type f -name 'mt-backup-*.tar.gz' -printf '%T@ %p\n' | sort -nr | awk -v k="$KEEP" 'NR>k{sub(/^[^ ]+ /, ""); print}')
+  for old in "${OLD_BACKUPS[@]}"; do
+    rm -f -- "$old" "$old.sha256"
+    log INFO "$(L "removed old backup" "removido backup antigo"): $old"
   done
 fi
 EOF
@@ -1759,7 +1785,6 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
-
 LANG_UI="en"
 if [[ -r "$ROOT/.lang" ]]; then LANG_UI="$(<"$ROOT/.lang")"; fi
 [[ "$LANG_UI" == "pt" ]] || LANG_UI="en"
@@ -1768,16 +1793,38 @@ log() { echo "$(date '+%Y-%m-%dT%H:%M:%S%z') [$1] [update] ${*:2}"; }
 
 log INFO "$(L "backup before the update" "backup antes da atualização")"
 "$ROOT/scripts/backup.sh"
+# Do not update unless a fresh, integrity-checked backup was produced.
+LATEST="$(find "${BACKUP_DIR:-$(cat "$ROOT/.backup_dir" 2>/dev/null || printf '%s' "$ROOT/backups")}" -maxdepth 1 -type f -name 'mt-backup-*.tar.gz' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-)"
+[[ -n "$LATEST" && -s "$LATEST" && -s "$LATEST.sha256" ]] || { log ERROR "$(L "no validated backup found; update cancelled" "backup validado não encontrado; atualização cancelada")"; exit 1; }
+(cd "$(dirname "$LATEST")" && sha256sum -c "$(basename "$LATEST").sha256") >/dev/null || { log ERROR "$(L "backup checksum failed; update cancelled" "checksum do backup falhou; atualização cancelada")"; exit 1; }
 
 log INFO "$(L "rebuilding the image" "reconstruindo imagem")"
-# env -u TZ: a TZ in the shell would override the one in .env
 CARGS=(-f docker-compose.yml)
-if [[ -f docker-compose.warp-full.yml ]] && grep -qx 'MT_VIA_WARP=true' .env 2>/dev/null; then
-  CARGS+=(-f docker-compose.warp-full.yml)
-fi
+if [[ -f docker-compose.warp-full.yml ]] && grep -qx 'MT_VIA_WARP=true' .env 2>/dev/null; then CARGS+=(-f docker-compose.warp-full.yml); fi
 env -u TZ docker compose "${CARGS[@]}" build --pull
 env -u TZ docker compose "${CARGS[@]}" up -d
-log INFO "$(L "finished" "concluído")"
+
+# Wait up to 3 minutes for the service healthcheck; fail visibly if it never recovers.
+CN="mt"
+for i in $(seq 1 36); do
+  CID="$(docker compose "${CARGS[@]}" ps -q "$CN" 2>/dev/null || true)"
+  if [[ -z "$CID" ]]; then sleep 5; continue; fi
+  STATE="$(docker inspect -f '{{.State.Status}}' "$CID" 2>/dev/null || true)"
+  HEALTH="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$CID" 2>/dev/null || true)"
+  if [[ "$STATE" == "running" && ( "$HEALTH" == "healthy" || "$HEALTH" == "none" ) ]]; then
+    # Also check that the supervisor socket is available when the container has it.
+    if docker exec "$CID" test -S /tmp/supervisor.sock >/dev/null 2>&1 || [[ "$HEALTH" == "none" ]]; then
+      log INFO "$(L "container is running and healthy" "container está em execução e saudável")"
+      log INFO "$(L "finished" "concluído")"
+      exit 0
+    fi
+  fi
+  sleep 5
+done
+log ERROR "$(L "update completed but the container did not become healthy within 180 seconds; inspect docker compose logs" "atualização terminou, mas o container não ficou saudável em 180 segundos; verifique docker compose logs")"
+docker compose "${CARGS[@]}" ps >&2 || true
+docker compose "${CARGS[@]}" logs --tail 80 >&2 || true
+exit 1
 EOF
 
   chmod 755 "$APP_DIR"/docker/bin/* "$APP_DIR"/scripts/*.sh
@@ -1816,7 +1863,7 @@ etapa_instalar_base() {
 
   if ! command -v docker >/dev/null 2>&1; then
     run_spin "$(T "Installing Docker (get.docker.com)" "Instalando Docker (get.docker.com)")" /tmp/mt-docker-install.log \
-      bash -c 'curl -fsSL https://get.docker.com | DEBIAN_FRONTEND=noninteractive sh' || return 1
+      bash -c 'set -euo pipefail; f="$(mktemp /tmp/get-docker.XXXXXX.sh)"; trap '''rm -f "$f"''' EXIT; curl -fsSL --retry 3 --connect-timeout 10 https://get.docker.com -o "$f"; test -s "$f"; sh -n "$f"; DEBIAN_FRONTEND=noninteractive sh "$f"' || return 1
   fi
   command -v systemctl >/dev/null 2>&1 && systemctl enable --now docker >/dev/null 2>&1
   docker compose version >/dev/null 2>&1 || { err "$(T "Docker Compose v2 not found" "Docker Compose v2 não encontrado")"; return 1; }
@@ -2399,29 +2446,63 @@ restaurar_backup() {
   warn "$(T "This REPLACES the current MT4/MT5 data (accounts, EAs, settings) with the backup's content." "Isso SUBSTITUI os dados atuais de MT4/MT5 (contas, EAs, configurações) pelo conteúdo do backup.")"
   confirm "$(T "Confirm restoring $(basename "$b")?" "Confirmar restauração de $(basename "$b")?")" || { info "$(T "cancelled" "cancelado")"; return 0; }
 
-  dc stop >/dev/null 2>&1 || true
-  # Extract to a temp folder FIRST: if the archive is corrupt or the disk is full,
-  # the current drive_c is still intact. Only then replace it.
-  # Extrai ANTES numa pasta temporária: se o arquivo estiver corrompido ou faltar
-  # espaço, o drive_c atual continua intacto. Só depois substitui.
-  local tmp; tmp="$(mktemp -d "$APP_DIR/data/.restore.XXXXXX")"
-  if ! tar -C "$tmp" -xzf "$b"; then
-    rm -rf "$tmp"; err "$(T "failed to extract the backup (nothing was changed)" "falha ao extrair o backup (nada foi alterado)")"
-    dc up -d >/dev/null 2>&1 || true
+  # Validate archive integrity and reject unsafe paths before extracting anything.
+  local tmp rollback member rel src dst rc=0
+  tmp="$(mktemp -d "$APP_DIR/data/.restore.XXXXXX")" || return 1
+  rollback="$tmp/rollback"
+  mkdir -p "$rollback"
+  if ! gzip -t "$b" || ! tar -tzf "$b" >/dev/null; then
+    rm -rf -- "$tmp"; err "$(T "backup is corrupt; nothing was changed" "backup corrompido; nada foi alterado")"; return 1
+  fi
+  while IFS= read -r member; do
+    # Only allow the expected prefix roots and known backup entries; reject absolute/traversal paths.
+    [[ "$member" != /* && "/$member/" != *"/../"* ]] || { rc=1; break; }
+    rel="${member#./}"
+    case "$rel" in
+      prefix-mt4|prefix-mt4/*|prefix-mt5|prefix-mt5/*) ;;
+      *) rc=1; break ;;
+    esac
+  done < <(tar -tzf "$b")
+  if (( rc )) || ! tar -C "$tmp" -xzf "$b"; then
+    rm -rf -- "$tmp"; err "$(T "backup contains unsafe paths or failed extraction; nothing was changed" "backup contém caminhos inseguros ou falhou ao extrair; nada foi alterado")"; return 1
+  fi
+  # Snapshot every target entry that this archive will replace, so a failed copy can roll back.
+  local targets=() item prefix
+  for prefix in prefix-mt4 prefix-mt5; do
+    [[ -d "$tmp/$prefix" ]] || continue
+    for item in drive_c system.reg user.reg userdef.reg .mt_exe_path .mt_prefix_ready .deps dosdevices; do
+      if [[ -e "$tmp/$prefix/$item" || -L "$tmp/$prefix/$item" ]]; then
+        targets+=("$prefix/$item")
+        if [[ -e "$APP_DIR/data/$prefix/$item" || -L "$APP_DIR/data/$prefix/$item" ]]; then
+          mkdir -p "$rollback/$prefix"
+          cp -a -- "$APP_DIR/data/$prefix/$item" "$rollback/$prefix/" || { rm -rf -- "$tmp"; err "$(T "could not create rollback snapshot; restore cancelled" "não foi possível criar snapshot de rollback; restauração cancelada")"; return 1; }
+        fi
+      fi
+    done
+  done
+  if ((${#targets[@]} == 0)); then rm -rf -- "$tmp"; err "$(T "backup has no recognized MT4/MT5 data" "backup não contém dados MT4/MT5 reconhecidos")"; return 1; fi
+  dc stop >/dev/null 2>&1 || { rm -rf -- "$tmp"; err "$(T "could not stop container; restore cancelled" "não foi possível parar o container; restauração cancelada")"; return 1; }
+  for rel in "${targets[@]}"; do
+    src="$tmp/$rel"; dst="$APP_DIR/data/$rel"
+    rm -rf -- "$dst"
+    mkdir -p "$(dirname "$dst")"
+    if ! cp -a -- "$src" "$dst"; then rc=1; break; fi
+  done
+  if (( rc )); then
+    err "$(T "restore copy failed; rolling back previous data" "cópia da restauração falhou; revertendo dados anteriores")"
+    for rel in "${targets[@]}"; do
+      dst="$APP_DIR/data/$rel"; src="$rollback/$rel"
+      rm -rf -- "$dst"
+      if [[ -e "$src" || -L "$src" ]]; then mkdir -p "$(dirname "$dst")"; cp -a -- "$src" "$dst" || true; fi
+    done
+    rm -rf -- "$tmp"
+    dc up -d >/dev/null 2>&1 || err "$(T "rollback finished but container did not restart; run docker compose up -d manually" "rollback concluído, mas container não reiniciou; execute docker compose up -d manualmente")"
     return 1
   fi
-  for p in prefix-mt4 prefix-mt5; do
-    [[ -d "$tmp/$p/drive_c" ]] && rm -rf "$APP_DIR/data/$p/drive_c"
-  done
-  if cp -a "$tmp"/. "$APP_DIR/data"/ && rm -rf "$tmp"; then
-    chown -R 1000:1000 "$APP_DIR/data"
-    chmod 700 "$APP_DIR/data/prefix-mt4" "$APP_DIR/data/prefix-mt5" 2>/dev/null
-    ok "$(T "Backup restored" "Backup restaurado")"
-  else
-    rm -rf "$tmp"
-    err "$(T "failed to copy the restored files" "falha ao copiar os arquivos restaurados")"
-  fi
-  dc up -d >/dev/null 2>&1 && ok "$(T "container started" "container iniciado")"
+  rm -rf -- "$tmp"
+  chown -R 1000:1000 "$APP_DIR/data/prefix-mt4" "$APP_DIR/data/prefix-mt5" 2>/dev/null || true
+  chmod 700 "$APP_DIR/data/prefix-mt4" "$APP_DIR/data/prefix-mt5" 2>/dev/null || true
+  if dc up -d >/dev/null 2>&1; then ok "$(T "Backup restored and container started" "Backup restaurado e container iniciado")"; else err "$(T "backup restored but container failed to start; inspect docker compose logs" "backup restaurado, mas container não iniciou; verifique docker compose logs")"; return 1; fi
 }
 
 
@@ -2501,7 +2582,13 @@ desinstalar() {
   echo "  ${C_DIM}$(T "To use them again, run option 1 (base install) — prefixes are reused." "Para usá-los de novo, rode a opção 1 (instalação base) — os prefixos são reaproveitados.")${C_RESET}"
   local t; read -rp "  $(T "To DELETE EVERYTHING type DELETE (Enter keeps it): " "Para APAGAR TUDO digite APAGAR (Enter mantém): ")" t || true
   if [[ "${t:-}" == "APAGAR" || "${t:-}" == "DELETE" ]]; then
-    rm -rf "${APP_DIR:?}" && ok "$(T "$APP_DIR deleted" "$APP_DIR apagado")"
+    local app_real
+    app_real="$(realpath -m -- "$APP_DIR" 2>/dev/null || printf '%s' "$APP_DIR")"
+    if [[ -z "$app_real" || "$app_real" == "/" || "$app_real" != /* || "$app_real" == "/root" || "$app_real" == "/home" || "$app_real" == "/opt" ]]; then
+      err "$(T "unsafe APP_DIR; refusing recursive deletion: $app_real" "APP_DIR inseguro; recusando exclusão recursiva: $app_real")"
+      return 1
+    fi
+    rm -rf --one-file-system -- "$app_real" && ok "$(T "$app_real deleted" "$app_real apagado")"
   else
     info "$(T "data kept (re-run base install to recreate the container)" "dados mantidos (rode a instalação base de novo para recriar o container)")"
   fi
