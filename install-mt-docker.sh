@@ -53,6 +53,11 @@ set -uo pipefail
 # Global configuration / Configuração global
 # -----------------------------------------------------------------------------
 APP_DIR="${APP_DIR:-/opt/mt-docker}"
+WARP_DIR="${WARP_DIR:-/opt/warp-data}"
+WARP_CONTAINER="cloudflare-warp"
+WARP_NETWORK="warp-data_default"
+WARP_IP_FALLBACK="172.19.0.2"
+WARP_PORT=1080
 LANG_UI=""   # en | pt  (chosen on first run, saved in $APP_DIR/.lang)
 
 # T "english" "português"  → prints the string for the current UI language.
@@ -85,6 +90,7 @@ _load_env_file() {
 _load_env_file
 
 COMPOSE_FILE="$APP_DIR/docker-compose.yml"
+WARP_FULL_FILE="$APP_DIR/docker-compose.warp-full.yml"   # override: todo o tráfego do MT via WARP
 ENV_FILE="$APP_DIR/.env"
 MENU_BIN="/usr/local/bin/mt-menu"
 
@@ -429,11 +435,39 @@ container_name() {
 }
 
 # "env -u TZ": a TZ exported in the host shell would override the .env value
-dc() { env -u TZ docker compose -f "$COMPOSE_FILE" "$@"; }
+# Modo "tráfego total via WARP": ativo só se a flag está no .env E o arquivo override existe
+warp_full_ativo() { [[ -f "$WARP_FULL_FILE" && "$(env_get MT_VIA_WARP)" == "true" ]]; }
+dc() {
+  local -a f=(-f "$COMPOSE_FILE")
+  if warp_full_ativo; then f+=(-f "$WARP_FULL_FILE"); fi
+  env -u TZ -u MT_VIA_WARP -u WARP_ENABLED docker compose "${f[@]}" "$@"
+}
+# Igual ao dc, mas com limite de tempo ("timeout" não consegue chamar funções do shell)
+dc_t() { # dc_t SEGUNDOS args...
+  local t="$1"; shift
+  local -a f=(-f "$COMPOSE_FILE")
+  if warp_full_ativo; then f+=(-f "$WARP_FULL_FILE"); fi
+  timeout "$t" env -u TZ -u MT_VIA_WARP -u WARP_ENABLED docker compose "${f[@]}" "$@"
+}
 
 container_running() {
-  [[ -f "$COMPOSE_FILE" ]] || return 1
-  dc ps -q --status running 2>/dev/null | grep -q .
+  local cn; cn="$(container_name)"
+  [[ "$(docker inspect -f '{{.State.Running}}' "$cn" 2>/dev/null)" == "true" ]]
+}
+
+warpgw_running() {
+  [[ "$(docker inspect -f '{{.State.Running}}' mt-warp-gw 2>/dev/null)" == "true" ]]
+}
+
+compose_min_ok() { # Docker Compose >= 2.24.4 (necessário para "!reset")
+  local cv; cv="$(docker compose version --short 2>/dev/null | tr -d 'v' | cut -d- -f1)"
+  [[ -n "$cv" ]] || return 1
+  local IFS=. ; local -a a=($cv) b=(2 24 4); local i
+  for i in 0 1 2; do
+    (( ${a[i]:-0} > ${b[i]} )) && return 0
+    (( ${a[i]:-0} < ${b[i]} )) && return 1
+  done
+  return 0
 }
 
 need_base() {
@@ -459,11 +493,290 @@ wait_healthy() {
   for i in $(seq 1 36); do
     st="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cn" 2>/dev/null || echo missing)"
     [[ "$st" == "healthy" ]] && return 0
+    if [[ "$st" == "missing" ]]; then printf '\r\033[K'; return 1; fi
     printf '\r\033[K  %s %s %s (%ds)' "${SPIN[i % ${#SPIN[@]}]}" "$(T "waiting for healthcheck..." "aguardando healthcheck...")" "$st" $((i * 5))
     sleep 5
   done
   printf '\r\033[K'
   return 1
+}
+
+
+# -----------------------------------------------------------------------------
+# Cloudflare WARP (Opcional) / Optional Cloudflare WARP
+# Confinado ao Docker. Nunca altera rotas do host (SSH seguro).
+# -----------------------------------------------------------------------------
+warp_dc()      { env -u TZ docker compose -f "$WARP_DIR/docker-compose.yml" "$@"; }
+warp_running() { docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$WARP_CONTAINER"; }
+
+warp_ip() {
+  local ip
+  ip="$(docker inspect -f "{{with index .NetworkSettings.Networks \"$WARP_NETWORK\"}}{{.IPAddress}}{{end}}" \
+        "$WARP_CONTAINER" 2>/dev/null || true)"
+  printf '%s' "${ip:-$WARP_IP_FALLBACK}"
+}
+
+url_instalador() {
+  case "$1" in
+    mt4) printf '%s' "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt4/mt4oldsetup.exe" ;;
+    *)   printf '%s' "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe" ;;
+  esac
+}
+
+warp_conectar_mt() {
+  warp_full_ativo && return 0   # no modo total o mt já usa a rede do gateway
+  local cn; cn="$(container_name)"
+  docker inspect "$cn" >/dev/null 2>&1 || return 0
+  docker network connect "$WARP_NETWORK" "$cn" 2>&1 | grep -vi 'already exists' >&2 || true
+}
+
+warp_testar() {
+  local i
+  for i in $(seq 1 12); do
+    if curl -fsS --max-time 8 -x "socks5h://127.0.0.1:$WARP_PORT" \
+         https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -q '^warp=on'; then
+      return 0
+    fi
+    sleep 5
+  done
+  return 1
+}
+
+iniciar_warp() {
+  command -v docker >/dev/null 2>&1 || { err "$(T "Docker missing" "Docker ausente")"; return 1; }
+  mkdir -p "$APP_DIR" "$WARP_DIR"
+  if ! warp_running; then
+    cat > "$WARP_DIR/docker-compose.yml" <<'EOF'
+name: warp-data
+services:
+  cloudflare-warp:
+    image: zhengxiongzhao/warp-svc:latest-micro
+    container_name: cloudflare-warp
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1080:1080"   # Restrito ao host, não expõe SOCKS para a internet
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    devices:
+      - /dev/net/tun:/dev/net/tun
+EOF
+    run_spin "$(T "Starting Cloudflare WARP" "Iniciando Cloudflare WARP")" \
+      "$APP_DIR/data/logs/host-warp.log" warp_dc up -d || return 1
+    sleep 5
+  fi
+  warp_conectar_mt
+  if warp_testar; then
+    ok "$(T "WARP tunnel is up (container IP: $(warp_ip))" "Túnel WARP ativo (IP do container: $(warp_ip))")"
+  else
+    warn "$(T "WARP container started, but the tunnel did not confirm (warp=on)." "Container WARP iniciou, mas o túnel não confirmou (warp=on).")"
+  fi
+  env_set WARP_ENABLED true
+}
+
+parar_warp() {
+  docker stop "$WARP_CONTAINER" >/dev/null 2>&1 || true
+  env_set WARP_ENABLED false
+  ok "$(T "WARP stopped (RAM freed)" "WARP parado (RAM liberada)")"
+}
+
+download_via_warp() {
+  local url="$1" dest="$2" size
+  warp_running || iniciar_warp || return 1
+  mkdir -p "$(dirname "$dest")"
+  info "$(T "Downloading via WARP: $url" "Baixando via WARP: $url")"
+  if ! curl -fL --retry 3 --connect-timeout 20 --max-time 600 \
+         -x "socks5h://127.0.0.1:$WARP_PORT" -o "$dest.part" "$url"; then
+    rm -f "$dest.part"; err "$(T "download via WARP failed" "falha no download via WARP")"; return 1
+  fi
+  size="$(stat -c %s "$dest.part" 2>/dev/null || echo 0)"
+  if (( size < 200000 )) || [[ "$(head -c2 "$dest.part")" != "MZ" ]]; then
+    rm -f "$dest.part"; err "$(T "invalid file (${size} bytes, not a Windows executable)" "arquivo inválido (${size} bytes, não é executável Windows)")"; return 1
+  fi
+  mv -f "$dest.part" "$dest"
+  chown 1000:1000 "$dest" 2>/dev/null || true
+  chmod 644 "$dest"
+  ok "$(T "Download finished" "Download concluído"): $dest"
+}
+
+# Configura o proxy no registro do Wine (Best-effort)
+_wine_proxy_set() {
+  local en="$1" id="$2" pfx="/home/mt/prefix/$2"
+  local key='HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+  [[ -f "$APP_DIR/data/prefix-$id/.mt_prefix_ready" ]] || return 0
+  dc exec -T -e WINEPREFIX="$pfx" mt timeout 60 wine reg add "$key" /v ProxyEnable /t REG_DWORD /d "$en" /f >/dev/null 2>&1 || return 1
+  if [[ "$en" == "1" ]]; then
+    dc exec -T -e WINEPREFIX="$pfx" mt timeout 60 wine reg add "$key" /v ProxyServer /t REG_SZ /d "socks5://$(warp_ip):$WARP_PORT" /f >/dev/null 2>&1 || return 1
+  fi
+  dc exec -T -e WINEPREFIX="$pfx" mt wineserver -k >/dev/null 2>&1 || true
+}
+
+configurar_wine_proxy() {
+  local en="${1:-1}" id
+  if [[ "$en" == "1" ]] && warp_full_ativo; then
+    warn "$(T "Full WARP mode is active: the SOCKS proxy in Wine is not needed (and would not be reachable)." "O modo WARP total está ativo: o proxy SOCKS no Wine não é necessário (e não seria alcançável).")"
+    return 0
+  fi
+  container_running || { warn "$(T "Container is not running" "Container não está rodando")"; return 1; }
+  info "$(T "Configuring the proxy in the Wine registry..." "Configurando o proxy no registro do Wine...")"
+  for id in mt4 mt5; do
+    [[ -f "$APP_DIR/data/prefix-$id/.mt_prefix_ready" ]] || continue
+    dc exec -T mt mt-sv stop "$id" >/dev/null 2>&1 || true
+    _wine_proxy_set "$en" "$id" || warn "$(T "${id^^}: could not update the registry" "${id^^}: não consegui atualizar o registro")"
+    [[ -s "$APP_DIR/data/prefix-$id/.mt_exe_path" ]] && dc exec -T mt mt-sv start "$id" >/dev/null 2>&1 || true
+  done
+  ok "$(T "Wine proxy updated." "Proxy do Wine atualizado.")"
+  info "$(T "Note: Wine's WinINet barely supports SOCKS. The reliable use is downloading installers." "Obs.: o WinINet do Wine mal suporta SOCKS. O uso confiável é baixar instaladores.")"
+}
+
+mostrar_instrucoes_proxy_gui() {
+  echo
+  echo "  ${C_BOLD}${C_YELLOW}⚠ AÇÃO NECESSÁRIA NA TELA DO NOVNC ⚠${C_RESET}"
+  rule
+  echo "  Se a janela ${C_BOLD}\"Proxy Server\"${C_RESET} aparecer no instalador do MT:"
+  echo
+  echo "    1. No campo ${C_BOLD}Server:${C_RESET} digite exatamente:  ${C_CYAN}$(warp_ip):$WARP_PORT${C_RESET}"
+  echo "    2. No menu à direita (que está em HTTP), mude para: ${C_CYAN}SOCKS5${C_RESET}"
+  echo "    3. ${C_BOLD}Login${C_RESET} e ${C_BOLD}Password${C_RESET}: deixe ${C_BOLD}vazios${C_RESET}"
+  echo "    4. Clique em ${C_BOLD}OK${C_RESET}."
+  echo
+  echo "  ${C_DIM}(Se a janela não aparecer, o Wine aplicou o proxy sozinho. Ignore isso.)${C_RESET}"
+  rule
+  echo
+}
+
+# -----------------------------------------------------------------------------
+# Modo WARP TOTAL (opcional): TODO o tráfego do container mt sai pela Cloudflare WARP.
+# O mt passa a usar a rede de um container "gateway" WARP (network_mode: service:),
+# que roda o WARP em modo túnel. Separado do WARP SOCKS acima. O host/SSH não muda.
+# -----------------------------------------------------------------------------
+warp_full_gerar_arquivo() {
+  mkdir -p "$APP_DIR/data/warp-gw"
+  cat > "$WARP_FULL_FILE" <<'WARPFULL'
+# Gerado pelo mt-menu — não edite; use o menu (Manutenção → WARP).
+services:
+  warpgw:
+    image: ${WARP_GW_IMAGE:-caomingjun/warp:latest}
+    container_name: mt-warp-gw
+    restart: unless-stopped
+    mem_limit: 256m
+    device_cgroup_rules:
+      - 'c 10:200 rwm'
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - MKNOD
+      - AUDIT_WRITE
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=0
+      - net.ipv4.conf.all.src_valid_mark=1
+    environment:
+      - WARP_SLEEP=2
+      - WARP_ENABLE_NAT=1
+      - BETA_FIX_HOST_CONNECTIVITY=1
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${NOVNC_PORT:-6080}:6080"
+    volumes:
+      - ./data/warp-gw:/var/lib/cloudflare-warp
+    healthcheck:
+      test: ["CMD-SHELL", "(curl -fsS --max-time 5 https://www.cloudflare.com/cdn-cgi/trace || wget -qO- -T 5 https://www.cloudflare.com/cdn-cgi/trace) 2>/dev/null | grep -Eq '^warp=(on|plus)'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+  mt:
+    network_mode: "service:warpgw"
+    depends_on:
+      warpgw:
+        condition: service_healthy
+    hostname: !reset null
+    ports: !reset []
+WARPFULL
+}
+
+# Confere se a saída do container mt é a Cloudflare WARP (warp=on / warp=plus)
+warp_full_testar() {
+  local i out
+  for i in $(seq 1 12); do
+    if dc exec -T mt bash -lc 'command -v curl >/dev/null' 2>/dev/null; then
+      out="$(dc exec -T mt curl -fsS --max-time 8 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null || true)"
+    else
+      out="$(dc exec -T mt wget -qO- -T 8 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null || true)"
+    fi
+    if grep -qE '^warp=(on|plus)$' <<< "$out"; then
+      grep -E '^(ip|loc|warp)=' <<< "$out" | sed 's/^/    /'
+      return 0
+    fi
+    sleep 5
+  done
+  return 1
+}
+
+ativar_warp_total() {
+  need_base || return 1
+  require_root
+  if warp_full_ativo; then info "$(T "Full WARP mode is already active." "O modo WARP total já está ativo.")"; return 0; fi
+
+  # "!reset" no compose exige Docker Compose >= 2.24.4
+  if ! compose_min_ok; then
+    local cv; cv="$(docker compose version --short 2>/dev/null || echo none)"
+    err "$(T "Docker Compose >= 2.24.4 is required (found: $cv). Update Docker first." "É preciso Docker Compose >= 2.24.4 (encontrado: $cv). Atualize o Docker antes.")"
+    return 1
+  fi
+  if [[ ! -e /dev/net/tun ]]; then
+    modprobe tun 2>&1 | sed 's/^/    /' || true
+  fi
+  [[ -e /dev/net/tun ]] || { err "$(T "/dev/net/tun not found on the host (VPS without TUN support?)." "/dev/net/tun não existe no host (VPS sem suporte a TUN?).")"; return 1; }
+
+  echo
+  warn "$(T "ALL traffic of the MT container (broker connection, downloads, updates) will go through Cloudflare WARP." "TODO o tráfego do container MT (corretora, downloads, atualizações) vai passar pela Cloudflare WARP.")"
+  warn "$(T "This adds latency (matters for scalping/EAs), the exit IP is a shared Cloudflare IP (some brokers dislike that)," "Isso adiciona latência (importa para scalping/EAs), o IP de saída é um IP compartilhado da Cloudflare (algumas corretoras não gostam)")"
+  warn "$(T "uses ~100–250 MB RAM, and MT4/MT5 + noVNC restart. Check your broker's terms before running live accounts." "usa ~100–250 MB de RAM e o MT4/MT5 + noVNC reiniciam. Confira as regras da sua corretora antes de usar contas reais.")"
+  confirm "$(T "Enable full WARP mode?" "Ativar o modo WARP total?")" || { info "$(T "cancelled" "cancelado")"; return 0; }
+
+  # o proxy SOCKS no registro do Wine não é alcançável pela nova rede: remove antes de trocar
+  if container_running; then configurar_wine_proxy 0 >/dev/null 2>&1 || true; fi
+
+  warp_full_gerar_arquivo
+  env_set MT_VIA_WARP true
+  if ! run_spin "$(T "Recreating containers (downloads the WARP gateway image)" "Recriando containers (baixa a imagem do gateway WARP)")" \
+         "$APP_DIR/data/logs/host-warp-full.log" dc_t 600 up -d --force-recreate; then
+    err "$(T "Failed. Reverting to normal mode..." "Falhou. Revertendo ao modo normal...")"
+    env_set MT_VIA_WARP false
+    if ! dc up -d --force-recreate --remove-orphans >/dev/null 2>&1; then
+      err "$(T "Rollback failed. Run manually: cd $APP_DIR && docker compose up -d --force-recreate" "Rollback falhou. Rode manualmente: cd $APP_DIR && docker compose up -d --force-recreate")"
+    fi
+    [[ "$(env_get WARP_ENABLED)" == "true" ]] && warp_conectar_mt
+    return 1
+  fi
+
+  info "$(T "Waiting for the container and the WARP tunnel..." "Aguardando o container e o túnel WARP...")"
+  wait_supervisor || warn "$(T "supervisord did not respond yet; check the logs" "supervisord ainda não respondeu; veja os logs")"
+  if warp_full_testar; then
+    ok "$(T "MT container is exiting through Cloudflare WARP" "O container MT está saindo pela Cloudflare WARP")"
+  else
+    warn "$(T "Could not confirm warp=on from inside the MT container." "Não consegui confirmar warp=on de dentro do container MT.")"
+    warn "$(T "Check: docker logs mt-warp-gw   — or revert with the 'Disable full WARP mode' option." "Veja: docker logs mt-warp-gw   — ou reverta na opção 'Desativar modo WARP total'.")"
+  fi
+  info "$(T "noVNC keeps the same address (SSH tunnel to 127.0.0.1:6080)." "O noVNC continua no mesmo endereço (túnel SSH para 127.0.0.1:6080).")"
+}
+
+desativar_warp_total() {
+  need_base || return 1
+  require_root
+  if ! warp_full_ativo; then info "$(T "Full WARP mode is not active." "O modo WARP total não está ativo.")"; return 0; fi
+  confirm "$(T "Disable full WARP mode? (MT4/MT5 restart and use the VPS IP again)" "Desativar o modo WARP total? (MT4/MT5 reiniciam e voltam a usar o IP da VPS)")" || { info "$(T "cancelled" "cancelado")"; return 0; }
+  env_set MT_VIA_WARP false
+  # warpgw deixa de fazer parte do compose ativo: --remove-orphans o remove
+  if run_spin "$(T "Recreating containers in normal mode" "Recriando containers no modo normal")" \
+       "$APP_DIR/data/logs/host-warp-full.log" dc up -d --force-recreate --remove-orphans; then
+    [[ "$(env_get WARP_ENABLED)" == "true" ]] && warp_conectar_mt
+    ok "$(T "Normal mode restored." "Modo normal restaurado.")"
+  else
+    err "$(T "Failed to recreate; see $APP_DIR/data/logs/host-warp-full.log" "Falha ao recriar; veja $APP_DIR/data/logs/host-warp-full.log")"
+    return 1
+  fi
 }
 
 # State of one terminal for the dashboard
@@ -588,19 +901,20 @@ escolher_tz() {
 # Wine version / Versão do Wine
 # -----------------------------------------------------------------------------
 escolher_wine() {
-  local atual def=1 opt v
+  local atual def=1 opt v br
   atual="$(env_get WINE_VERSION)"; atual="${atual:-10.0.0.0~jammy-1}"
   [[ "$atual" == 11.* ]] && def=2
-  echo "  ${C_BOLD}$(T "Wine version" "Versão do Wine")${C_RESET} ${C_DIM}($(T "current" "atual"): ${atual%%.*})${C_RESET}"
+  echo "  ${C_BOLD}$(T "Wine version" "Versão do Wine")${C_RESET} ${C_DIM}($(T "current" "atual"): ${atual%%~*})${C_RESET}"
   echo "    1) Wine 10  ${C_GREEN}($(T "recommended" "recomendado"))${C_RESET}  ${C_DIM}— $(T "works with the official MetaQuotes installer" "funciona com o instalador oficial da MetaQuotes")${C_RESET}"
-  echo "    2) Wine 11  ${C_DIM}— $(T "newer; the official MetaQuotes installer may fail" "mais novo; o instalador oficial da MetaQuotes pode falhar")${C_RESET}"
+  echo "    2) Wine 11.20 (devel)  ${C_DIM}— $(T "newer; the official MetaQuotes installer may fail" "mais novo; o instalador oficial da MetaQuotes pode falhar")${C_RESET}"
   read -rp "  $(T "Option" "Opção") [1-2] (Enter=$def): " opt || true
   case "${opt:-$def}" in
-    2) v="11.0.0.0~jammy-1" ;;
-    *) v="10.0.0.0~jammy-1" ;;
+    2) v="11.20~jammy-1"; br="devel" ;;   # 11.20 is a development release (11.0 was the stable one)
+    *) v="10.0.0.0~jammy-1"; br="stable" ;;
   esac
   env_set WINE_VERSION "$v"
-  ok "Wine ${v%%.*} (WINE_VERSION=$v)"
+  env_set WINE_BRANCH "$br"
+  ok "Wine ${v%%~*} (WINE_BRANCH=$br, WINE_VERSION=$v)"
 }
 
 # -----------------------------------------------------------------------------
@@ -1348,6 +1662,7 @@ default_kv RESOLUTION "1024x600x16"
 default_kv EA_DEPS_MT4 '"corefonts vcrun2019 winhttp gdiplus msxml6"'
 default_kv EA_DEPS_MT5 '"corefonts vcrun2019 winhttp gdiplus msxml6"'
 default_kv MT4_ARCH "win64"
+default_kv WARP_ENABLED "false"
 set_kv MT_LANG "$LANG_UI"
 # win32 breaks 64-bit installers ("Bad EXE format"); win64 runs both
 [[ "$(get_kv MT4_ARCH)" == "win32" ]] && set_kv MT4_ARCH win64
@@ -1456,8 +1771,12 @@ log INFO "$(L "backup before the update" "backup antes da atualização")"
 
 log INFO "$(L "rebuilding the image" "reconstruindo imagem")"
 # env -u TZ: a TZ in the shell would override the one in .env
-env -u TZ docker compose build --pull
-env -u TZ docker compose up -d
+CARGS=(-f docker-compose.yml)
+if [[ -f docker-compose.warp-full.yml ]] && grep -qx 'MT_VIA_WARP=true' .env 2>/dev/null; then
+  CARGS+=(-f docker-compose.warp-full.yml)
+fi
+env -u TZ docker compose "${CARGS[@]}" build --pull
+env -u TZ docker compose "${CARGS[@]}" up -d
 log INFO "$(L "finished" "concluído")"
 EOF
 
@@ -1548,7 +1867,16 @@ etapa_instalar_base() {
   if wait_healthy; then
     printf '\r\033[K'; ok "$(T "Container healthy" "Container saudável")"
   else
-    printf '\r\033[K'; warn "$(T "Healthcheck did not become healthy in time. See: mt-menu → 4 (Status)" "Healthcheck não ficou saudável no prazo. Veja: mt-menu → 4 (Status)")"
+    printf '\r\033[K'; warn "$(T "Healthcheck did not become healthy in time. See: mt-menu → 4 (Status & maintenance)" "Healthcheck não ficou saudável no prazo. Veja: mt-menu → 4 (Status e manutenção)")"
+  fi
+
+  if [[ "$(env_get WARP_ENABLED)" != "true" ]]; then
+    echo
+    if confirm "$(T "Install Cloudflare WARP now? Useful if your VPS IP is blocked by MetaQuotes." "Deseja instalar o Cloudflare WARP agora? Útil se o IP da sua VPS tiver bloqueios de rede.")"; then
+      if iniciar_warp; then
+        ok "$(T "WARP ready. It will be used to download installers." "WARP pronto. Será usado para baixar instaladores.")"
+      fi
+    fi
   fi
 
   echo
@@ -1599,10 +1927,18 @@ instalar_terminal() { # instalar_terminal mt4|mt5 [--keep-stopped]
               "$APP_DIR/data/installers/${id}.exe" \
               "$APP_DIR/data/installers/"*${id}*.exe; do
     [[ -f "$cand" ]] || continue
-    # For MT4 skip files that look like MT5-only installers if a better name exists
+    [[ "$(head -c2 "$cand" 2>/dev/null)" == "MZ" ]] || { warn "$(T "ignoring non-PE file: $cand" "ignorando arquivo não-PE: $cand")"; continue; }
     local_inst="$cand"
     break
   done
+  if [[ -z "$local_inst" && "$(env_get WARP_ENABLED)" == "true" ]]; then
+    if download_via_warp "$(url_instalador "$id")" "$APP_DIR/data/installers/${id}setup.exe"; then
+      local_inst="$APP_DIR/data/installers/${id}setup.exe"
+    else
+      warn "$(T "Download via WARP failed." "Download via WARP falhou.")"
+      confirm "$(T "Try without WARP?" "Tentar sem WARP?")" || return 1
+    fi
+  fi
   if [[ -n "$local_inst" ]]; then
     info "$(T "Using local installer: $local_inst" "Usando instalador local: $local_inst")"
     # Path inside the container (volume mount is read-only)
@@ -1611,6 +1947,9 @@ instalar_terminal() { # instalar_terminal mt4|mt5 [--keep-stopped]
 
   echo
   info "$(T "Installing ${id^^} — takes 10 to 30 min. Watch it through noVNC (SSH tunnel shown just above)." "Instalando ${id^^} — leva de 10 a 30 min. Acompanhe pelo noVNC (túnel SSH mostrado logo acima).")"
+  if [[ "$(env_get WARP_ENABLED)" == "true" ]]; then
+    warp_full_ativo || mostrar_instrucoes_proxy_gui
+  fi
   dc exec -T mt mt-sv stop "$id" >/dev/null 2>&1 || true
   sleep 2
 
@@ -1622,8 +1961,28 @@ instalar_terminal() { # instalar_terminal mt4|mt5 [--keep-stopped]
     dc exec -T mt bash -c 'f=/tmp/mt-install.running; if [[ -f "$f" ]]; then kill "$(cat "$f")" 2>/dev/null || true; rm -f "$f"; fi' >/dev/null 2>&1 || true
   fi
 
+  if (( rc != 0 )) && [[ ! -s "$APP_DIR/data/prefix-$id/.mt_exe_path" ]] \
+     && [[ -z "$local_inst" && "$(env_get WARP_ENABLED)" != "true" ]] \
+     && grep -qiE 'download (failed|falhou)' "$log" 2>/dev/null; then
+    warn "$(T "The download failed. This usually means the MetaQuotes server is blocking your IP." "O download falhou. Isso geralmente indica bloqueio de IP pelo servidor da MetaQuotes.")"
+    if confirm "$(T "Enable WARP and try again?" "Deseja ativar o WARP e tentar novamente?")"; then
+      if iniciar_warp && download_via_warp "$(url_instalador "$id")" "$APP_DIR/data/installers/${id}setup.exe"; then
+        args+=(--installer "/home/mt/installers/${id}setup.exe")
+        rc=0
+        run_spin "$(T "Installing ${id^^} (via WARP)" "Instalando ${id^^} (via WARP)")" "$log" \
+          dc exec -T mt mt-install "$id" "${args[@]}" || rc=$?
+        if (( rc != 0 )); then
+          dc exec -T mt bash -c 'f=/tmp/mt-install.running; [[ -f "$f" ]] && { kill "$(cat "$f")" 2>/dev/null || true; rm -f "$f"; }' >/dev/null 2>&1 || true
+        fi
+      fi
+    fi
+  fi
+
   # Only start the terminal if installation produced the marker (and caller did not ask to keep stopped)
   if [[ -s "$APP_DIR/data/prefix-$id/.mt_exe_path" ]]; then
+    if [[ "$(env_get WARP_ENABLED)" == "true" ]] && ! warp_full_ativo; then
+      _wine_proxy_set 1 "$id" || true
+    fi
     if (( keep_stopped == 0 )); then
       dc exec -T mt mt-sv start "$id" >/dev/null 2>&1 || true
     fi
@@ -1926,35 +2285,53 @@ etapa_instalar_robos() {
 # -----------------------------------------------------------------------------
 # Step 4 — Status / Diagnostics / Etapa 4 — Status / Diagnóstico
 # -----------------------------------------------------------------------------
-etapa_status() {
-  title "$(T "4 · Status and diagnostics" "4 · Status e diagnóstico")"
-  require_root
-  need_base || return 1
+explicar_mt_parado() {
+  local cn st rc net
+  cn="$(container_name)"
+  st="$(docker inspect -f '{{.State.Status}}' "$cn" 2>/dev/null || echo missing)"
+  rc="$(docker inspect -f '{{.RestartCount}}' "$cn" 2>/dev/null || echo '?')"
+  net="$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$cn" 2>/dev/null || echo '?')"
+  echo "  mt: status=$st restarts=$rc network=$net"
+  if warp_full_ativo; then
+    local gw_st gw_rc
+    gw_st="$(docker inspect -f '{{.State.Status}}' mt-warp-gw 2>/dev/null || echo missing)"
+    gw_rc="$(docker inspect -f '{{.RestartCount}}' mt-warp-gw 2>/dev/null || echo '?')"
+    echo "  warpgw: status=$gw_st restarts=$gw_rc"
+    if [[ "$gw_st" != "running" || "$gw_rc" != "0" ]]; then
+      err "$(T "The WARP gateway is not stable — the MT container cannot share its network." "O gateway WARP não está estável — o container MT não consegue compartilhar a rede.")"
+      echo "  $(T "Check:" "Veja:") docker logs --tail 40 mt-warp-gw"
+      echo "  $(T "Revert with:" "Reverta com:") sudo mt-menu → 4 → WARP → 6"
+    fi
+  fi
+}
+
+status_resumo() {
+  # Compact status block used by the unified Status & Maintenance menu
   local cn; cn="$(container_name)"
-
-  echo "  ${C_BOLD}Container${C_RESET}"; rule 30
-  dc ps 2>&1 | sed 's/^/  /' || true
+  painel
   echo
-
   if container_running; then
-    echo "  ${C_BOLD}$(T "Internal services (supervisord)" "Serviços internos (supervisord)")${C_RESET}"; rule 30
-    dc exec -T mt mt-sv status 2>/dev/null | sed 's/^/  /' || warn "$(T "could not query supervisord" "não foi possível consultar o supervisord")"
+    echo "  ${C_BOLD}$(T "Services" "Serviços")${C_RESET}"
+    dc exec -T mt mt-sv status 2>/dev/null | sed 's/^/    /' || warn "  $(T "could not query supervisord" "não foi possível consultar o supervisord")"
     echo
-    echo "  ${C_BOLD}$(T "Terminal processes" "Processos dos terminais")${C_RESET}"; rule 30
-    local procs
-    procs="$(dc exec -T mt ps aux 2>/dev/null | grep -E 'terminal(64)?\.exe' | grep -v grep | cut -c1-$((COLS - 2)) | sed 's/^/  /')"
-    if [[ -n "$procs" ]]; then echo "$procs"; else echo "  $(T "(no terminal running)" "(nenhum terminal rodando)")"; fi
-    echo
-    echo "  ${C_BOLD}$(T "Resources" "Recursos")${C_RESET}"; rule 30
     docker stats --no-stream --format '  CPU {{.CPUPerc}}   RAM {{.MemUsage}} ({{.MemPerc}})   PIDs {{.PIDs}}' "$cn" 2>/dev/null || true
     free -m | awk 'NR==1||/Mem|Swap/' | sed 's/^/  /'
-    df -h --output=used,size,pcent "$APP_DIR" | awk -v d="$(T "Disk:" "Disco:")" -v u="$(T "used of" "usados de")" 'NR==2{printf "  %s %s %s %s (%s)\n", d, $1, u, $2, $3}'
+    df -h --output=used,size,pcent "$APP_DIR" 2>/dev/null | awk -v d="$(T "Disk:" "Disco:")" -v u="$(T "used of" "usados de")" 'NR==2{printf "  %s %s %s %s (%s)\n", d, $1, u, $2, $3}'
     echo
-    echo "  ${C_BOLD}$(T "Last log lines" "Últimas linhas do log")${C_RESET}"; rule 30
-    dc exec -T mt tail -8 /home/mt/logs/mt-docker.log 2>/dev/null | cut -c1-$((COLS - 2)) | sed 's/^/  /' || true
+    echo "  ${C_DIM}$(T "Last log lines" "Últimas linhas do log"):${C_RESET}"
+    dc exec -T mt tail -5 /home/mt/logs/mt-docker.log 2>/dev/null | cut -c1-$((COLS - 2)) | sed 's/^/    /' || true
   else
-    warn "$(T "Container is not running (menu 5 → Start)." "Container não está rodando (menu 5 → Iniciar).")"
+    warn "$(T "Container is not running." "Container não está rodando.")"
+    explicar_mt_parado
   fi
+}
+
+etapa_status() {
+  # Kept for CLI "status" and backward compatibility
+  title "$(T "Status and diagnostics" "Status e diagnóstico")"
+  require_root
+  need_base || return 1
+  status_resumo
   echo
   mostrar_acesso
 }
@@ -2023,22 +2400,63 @@ restaurar_backup() {
   confirm "$(T "Confirm restoring $(basename "$b")?" "Confirmar restauração de $(basename "$b")?")" || { info "$(T "cancelled" "cancelado")"; return 0; }
 
   dc stop >/dev/null 2>&1 || true
-  # List the archive ONCE into a variable. (Piping "tar -t | grep -q" with pipefail
-  # fails with SIGPIPE on big archives and the old drive_c would not be removed.)
-  listing="$(tar -tzf "$b" 2>/dev/null)"
+  # Extract to a temp folder FIRST: if the archive is corrupt or the disk is full,
+  # the current drive_c is still intact. Only then replace it.
+  # Extrai ANTES numa pasta temporária: se o arquivo estiver corrompido ou faltar
+  # espaço, o drive_c atual continua intacto. Só depois substitui.
+  local tmp; tmp="$(mktemp -d "$APP_DIR/data/.restore.XXXXXX")"
+  if ! tar -C "$tmp" -xzf "$b"; then
+    rm -rf "$tmp"; err "$(T "failed to extract the backup (nothing was changed)" "falha ao extrair o backup (nada foi alterado)")"
+    dc up -d >/dev/null 2>&1 || true
+    return 1
+  fi
   for p in prefix-mt4 prefix-mt5; do
-    if grep -q "^$p/drive_c" <<< "$listing"; then
-      rm -rf "$APP_DIR/data/$p/drive_c"
-    fi
+    [[ -d "$tmp/$p/drive_c" ]] && rm -rf "$APP_DIR/data/$p/drive_c"
   done
-  if tar -C "$APP_DIR/data" -xzf "$b"; then
+  if cp -a "$tmp"/. "$APP_DIR/data"/ && rm -rf "$tmp"; then
     chown -R 1000:1000 "$APP_DIR/data"
     chmod 700 "$APP_DIR/data/prefix-mt4" "$APP_DIR/data/prefix-mt5" 2>/dev/null
     ok "$(T "Backup restored" "Backup restaurado")"
   else
-    err "$(T "failed to extract the backup" "falha ao extrair o backup")"
+    rm -rf "$tmp"
+    err "$(T "failed to copy the restored files" "falha ao copiar os arquivos restaurados")"
   fi
   dc up -d >/dev/null 2>&1 && ok "$(T "container started" "container iniciado")"
+}
+
+
+apagar_backups() {
+  local bks=() b i=1 n keep
+  while IFS= read -r b; do bks+=("$b"); done < <(ls -1t "$BACKUP_DIR"/mt-backup-*.tar.gz 2>/dev/null)
+  if ((${#bks[@]} == 0)); then
+    info "$(T "No backups in $BACKUP_DIR" "Nenhum backup em $BACKUP_DIR")"
+    return 0
+  fi
+  echo "  ${C_BOLD}$(T "Backups in" "Backups em") $BACKUP_DIR:${C_RESET}"
+  for b in "${bks[@]}"; do
+    printf '    %2d) %s  %s(%s)%s\n' "$i" "$(basename "$b")" "$C_DIM" "$(du -h "$b" | cut -f1)" "$C_RESET"
+    i=$((i + 1))
+  done
+  echo
+  echo "    A) $(T "Delete ALL" "Apagar TODOS")"
+  echo "    0) $(T "Cancel" "Cancelar")"
+  read -rp "  $(T "Delete which? (number, A=all, 0=cancel)" "Apagar qual? (número, A=todos, 0=cancelar)"): " n || true
+  n="${n:-0}"
+  if [[ "${n,,}" == "a" ]]; then
+    warn "$(T "This will permanently delete ALL ${#bks[@]} backup(s)." "Isso vai apagar DEFINITIVAMENTE todos os ${#bks[@]} backup(s).")"
+    confirm "$(T "Confirm delete ALL?" "Confirmar apagar TODOS?")" || { info "$(T "cancelled" "cancelado")"; return 0; }
+    for b in "${bks[@]}"; do
+      rm -f -- "$b" && ok "$(T "removed" "removido"): $(basename "$b")" || err "$(T "failed" "falhou"): $b"
+    done
+    return 0
+  fi
+  if ! [[ "$n" =~ ^[0-9]+$ ]] || (( n < 1 || n > ${#bks[@]} )); then
+    info "$(T "cancelled" "cancelado")"
+    return 0
+  fi
+  b="${bks[n-1]}"
+  confirm "$(T "Delete $(basename "$b")?" "Apagar $(basename "$b")?")" || { info "$(T "cancelled" "cancelado")"; return 0; }
+  rm -f -- "$b" && ok "$(T "removed" "removido"): $(basename "$b")" || err "$(T "failed" "falhou"): $b"
 }
 
 trocar_senha_vnc() {
@@ -2072,10 +2490,11 @@ desinstalar() {
       crontab -r 2>/dev/null || true
     fi
   fi
+  docker rm -f "$WARP_CONTAINER" >/dev/null 2>&1 || true
   rm -f "$MENU_BIN"
   # Always drop compose/Dockerfile so need_base/painel report "base not installed"
   # (otherwise menu option 5→Start fails with "container does not exist").
-  rm -f "$COMPOSE_FILE" "$APP_DIR/Dockerfile" "$APP_DIR/.dockerignore" 2>/dev/null || true
+  rm -f "$COMPOSE_FILE" "$WARP_FULL_FILE" "$APP_DIR/Dockerfile" "$APP_DIR/.dockerignore" 2>/dev/null || true
   echo
   echo "  $(T "Account data is still in:" "Dados das contas continuam em:") ${C_CYAN}$APP_DIR/data${C_RESET}"
   echo "  $(T "Bots and backups stay in" "Robôs e backups ficam em") ${C_CYAN}$ROBOS_DIR${C_RESET} $(T "and" "e") ${C_CYAN}$BACKUP_DIR${C_RESET} $(T "(not deleted)." "(não são apagados).")"
@@ -2092,31 +2511,93 @@ etapa_manutencao() {
   need_base || { pause; return; }
   local op rc
   while true; do
-    title "$(T "6 · Maintenance" "6 · Manutenção")"
+    title "$(T "4 · Status & Maintenance" "4 · Status e Manutenção")"
+    status_resumo
+    echo
+    rule
     echo "    1) $(T "Make a backup now" "Fazer backup agora")"
     echo "    2) $(T "Restore a backup" "Restaurar um backup")"
-    echo "    3) $(T "Update (backup + rebuild image)" "Atualizar (backup + reconstruir imagem)")"
-    echo "    4) $(T "Live logs (Ctrl+C goes back)" "Ver logs em tempo real (Ctrl+C volta)")"
-    echo "    5) $(T "Live resource usage (Ctrl+C goes back)" "Consumo de recursos ao vivo (Ctrl+C volta)")"
-    echo "    6) $(T "Change the VNC password" "Trocar senha do VNC")"
-    echo "    7) $(T "Change the timezone" "Trocar fuso horário")"
-    echo "    8) $(T "Uninstall" "Desinstalar")"
+    echo "    3) $(T "Delete backups" "Apagar backups")"
+    echo "    4) $(T "Update (backup + rebuild image)" "Atualizar (backup + reconstruir imagem)")"
+    echo "    5) $(T "Live logs (Ctrl+C goes back)" "Logs ao vivo (Ctrl+C volta)")"
+    echo "    6) $(T "Live resource usage (Ctrl+C goes back)" "Recursos ao vivo (Ctrl+C volta)")"
+    echo "    7) $(T "Change VNC password" "Trocar senha VNC")"
+    echo "    8) $(T "Change timezone" "Trocar fuso horário")"
+    echo "    9) $(T "Manage Cloudflare WARP" "Gerenciar Cloudflare WARP")"
+    echo "    U) $(T "Uninstall" "Desinstalar")"
     echo "    0) $(T "Back" "Voltar")"
     echo
-    rc=0; ask op "  $(T "Option" "Opção") [0-8]: " || rc=$?
+    rc=0; ask op "  $(T "Option" "Opção") [0-9,U]: " || rc=$?
+    (( rc == 1 )) && return
+    (( rc == 2 )) && continue
+    case "${op,,}" in
+      1) fazer_backup ;;
+      2) restaurar_backup ;;
+      3) apagar_backups ;;
+      4) if confirm "$(T "Make a backup, rebuild the image and restart?" "Fazer backup, reconstruir imagem e reiniciar?")"; then
+           run_spin "$(T "Updating" "Atualizando")" "$APP_DIR/data/logs/host-update.log" bash "$APP_DIR/scripts/update.sh"
+         fi ;;
+      5) dc logs -f --tail 50 mt ;;
+      6) docker stats "$(container_name)" ;;
+      7) trocar_senha_vnc ;;
+      8) escolher_tz && confirm "$(T "Restart the container to apply the new timezone?" "Reiniciar o container para aplicar o novo fuso?")" && dc up -d --force-recreate >/dev/null 2>&1 && ok "$(T "applied" "aplicado")" ;;
+      9) etapa_warp ;;
+      u) desinstalar; [[ -d "$APP_DIR" ]] || return ;;
+      0) return ;;
+      *) warn "$(T "invalid option" "opção inválida")" ;;
+    esac
+    pause
+  done
+}
+
+etapa_warp() {
+  need_base || { pause; return; }
+  local op rc id
+  while true; do
+    title "$(T "Cloudflare WARP" "Cloudflare WARP")"
+    if warp_running; then badge ok "$(T "WARP running" "WARP rodando")"; else badge off "$(T "WARP stopped" "WARP parado")"; fi
+    echo; echo
+    echo "    1) $(T "Status / test the tunnel" "Status / testar o túnel")"
+    echo "    2) $(T "Enable WARP and configure Wine" "Ativar WARP e configurar o Wine")"
+    echo "    3) $(T "Disable WARP (saves RAM)" "Desativar WARP (economiza RAM)")"
+    echo "    4) $(T "Download MT4/MT5 installer via WARP" "Baixar instalador MT4/MT5 via WARP")"
+    echo
+    if warp_full_ativo; then badge ok "$(T "Full mode: MT traffic goes through WARP" "Modo total: tráfego do MT sai pela WARP")"; else badge off "$(T "Full mode: off (MT uses the VPS IP)" "Modo total: desligado (MT usa o IP da VPS)")"; fi
+    echo; echo
+    echo "    5) $(T "Enable FULL WARP mode (all MT traffic)" "Ativar modo WARP TOTAL (todo o tráfego do MT)")"
+    echo "    6) $(T "Disable full WARP mode" "Desativar modo WARP total")"
+    echo "    7) $(T "Test MT exit IP (is it WARP?)" "Testar IP de saída do MT (é WARP?)")"
+    echo "    0) $(T "Back" "Voltar")"
+    echo
+    rc=0; ask op "  $(T "Option" "Opção") [0-7]: " || rc=$?
     (( rc == 1 )) && return
     (( rc == 2 )) && continue
     case "$op" in
-      1) fazer_backup ;;
-      2) restaurar_backup ;;
-      3) if confirm "$(T "Make a backup, rebuild the image and restart?" "Fazer backup, reconstruir imagem e reiniciar?")"; then
-           run_spin "$(T "Updating" "Atualizando")" "$APP_DIR/data/logs/host-update.log" bash "$APP_DIR/scripts/update.sh"
+      1) if warp_running; then
+           if warp_testar; then ok "$(T "tunnel OK (warp=on)" "túnel OK (warp=on)")"; else warn "$(T "tunnel not confirmed" "túnel não confirmado")"; fi
+           echo "  WARP_ENABLED=$(env_get WARP_ENABLED)  IP=$(warp_ip)"
+         else info "$(T "WARP is stopped" "WARP está parado")"; fi ;;
+      2) iniciar_warp && configurar_wine_proxy 1 ;;
+      3) if confirm "$(T "Disable WARP?" "Desativar o WARP?")"; then
+           container_running && configurar_wine_proxy 0
+           parar_warp
          fi ;;
-      4) dc logs -f --tail 50 mt ;;
-      5) docker stats "$(container_name)" ;;
-      6) trocar_senha_vnc ;;
-      7) escolher_tz && confirm "$(T "Restart the container to apply the new timezone?" "Reiniciar o container para aplicar o novo fuso?")" && dc up -d --force-recreate >/dev/null 2>&1 && ok "$(T "applied" "aplicado")" ;;
-      8) desinstalar; [[ -d "$APP_DIR" ]] || return ;;
+      4) read -rp "  $(T "Which installer? [1=MT4 2=MT5]: " "Qual instalador? [1=MT4 2=MT5]: ")" id || true
+         case "$id" in 1) id=mt4 ;; 2) id=mt5 ;; *) id="" ;; esac
+         [[ -n "$id" ]] && download_via_warp "$(url_instalador "$id")" "$APP_DIR/data/installers/${id}setup.exe" ;;
+      5) ativar_warp_total ;;
+      6) desativar_warp_total ;;
+      7) if container_running; then
+           if warp_full_testar; then ok "$(T "MT exits through WARP" "O MT sai pela WARP")"; else warn "$(T "MT is NOT exiting through WARP (warp=off or no answer)" "O MT NÃO está saindo pela WARP (warp=off ou sem resposta)")"; fi
+         else
+           warn "$(T "The MT container is not running. Current state:" "O container MT não está rodando. Estado atual:")"
+           dc ps -a 2>&1 | sed 's/^/    /'
+           echo; echo "  ${C_BOLD}mt${C_RESET} $(T "(last log lines)" "(últimas linhas do log)")"; rule 30
+           docker logs --tail 15 "$(container_name)" 2>&1 | cut -c1-$((COLS - 4)) | sed 's/^/    /'
+           echo; echo "  ${C_BOLD}mt-warp-gw${C_RESET} $(T "(last log lines)" "(últimas linhas do log)")"; rule 30
+           docker logs --tail 15 mt-warp-gw 2>&1 | cut -c1-$((COLS - 4)) | sed 's/^/    /'
+           echo; info "$(T "Fix attempt: option 6 (disable full mode) returns to the normal mode." "Para voltar ao normal: opção 6 (desativar modo total).")"
+         fi ;;
       0) return ;;
       *) warn "$(T "invalid option" "opção inválida")" ;;
     esac
@@ -2181,14 +2662,13 @@ menu() {
     echo "   ${C_BOLD}1)${C_RESET} $(T "Install base               " "Instalar base              ") ${C_DIM}$(T "Docker, swap, image" "Docker, swap, imagem")${C_RESET}"
     echo "   ${C_BOLD}2)${C_RESET} $(T "Install / remove MT4/5     " "Instalar / remover MT4/5   ") ${C_DIM}$(T "install or uninstall" "instala ou desinstala")${C_RESET}"
     echo "   ${C_BOLD}3)${C_RESET} $(T "Bots, Indicators and Sets  " "Robôs, Indicadores e Sets  ") ${C_DIM}.ex4 .ex5 .set${C_RESET}"
-    echo "   ${C_BOLD}4)${C_RESET} $(T "Status and diagnostics" "Status e diagnóstico")"
+    echo "   ${C_BOLD}4)${C_RESET} $(T "Status & maintenance" "Status e manutenção") ${C_DIM}$(T "diagnostics, backups, logs, settings" "diagnóstico, backups, logs, ajustes")${C_RESET}"
     echo "   ${C_BOLD}5)${C_RESET} $(T "Operation                  " "Operação                   ") ${C_DIM}$(T "start / stop / restart" "iniciar / parar / reiniciar")${C_RESET}"
-    echo "   ${C_BOLD}6)${C_RESET} $(T "Maintenance                " "Manutenção                 ") ${C_DIM}$(T "backup, update, logs, password" "backup, update, logs, senha")${C_RESET}"
-    echo "   ${C_BOLD}7)${C_RESET} $(T "How to access              " "Como acessar               ") ${C_DIM}$(T "VNC password and SSH tunnel" "senha VNC e túnel SSH")${C_RESET}"
+    echo "   ${C_BOLD}6)${C_RESET} $(T "How to access              " "Como acessar               ") ${C_DIM}$(T "VNC password and SSH tunnel" "senha VNC e túnel SSH")${C_RESET}"
     echo "   ${C_BOLD}L)${C_RESET} Language / Idioma"
     echo "   ${C_BOLD}0)${C_RESET} $(T "Exit" "Sair")"
     echo
-    rc=0; ask opt "  $(T "Choose" "Escolha") [A,L,0-7]: " || rc=$?
+    rc=0; ask opt "  $(T "Choose" "Escolha") [A,L,0-6]: " || rc=$?
     if (( rc == 1 )); then exit 0; fi   # terminal closed / Ctrl+D: leave instead of spinning
     if (( rc == 2 )); then continue; fi # Ctrl+C: just redraw
     case "${opt,,}" in
@@ -2196,10 +2676,9 @@ menu() {
       1) run_etapa etapa_instalar_base ;;
       2) run_etapa etapa_instalar_terminais ;;
       3) run_etapa etapa_instalar_robos ;;
-      4) run_etapa etapa_status ;;
+      4) etapa_manutencao ;;
       5) etapa_operacao ;;
-      6) etapa_manutencao ;;
-      7) run_etapa etapa_acesso ;;
+      6) run_etapa etapa_acesso ;;
       l) run_etapa trocar_idioma ;;
       0|q|exit|sair) echo; info "$(T "Goodbye." "Até logo.")"; exit 0 ;;
       "") ;;
@@ -2246,7 +2725,8 @@ main() {
     status)               etapa_status ;;
     backup)               need_base && fazer_backup ;;
     idioma|language|lang) escolher_idioma ;;
-    *) die "$(T "unknown command: $cmd (use: menu guided base terminals bots status backup language)" "comando desconhecido: $cmd (use: menu guiada base terminais robos status backup idioma)")" ;;
+    warp)                 etapa_warp ;;
+    *) die "$(T "unknown command: $cmd (use: menu guided base terminals bots status backup language warp)" "comando desconhecido: $cmd (use: menu guiada base terminais robos status backup idioma warp)")" ;;
   esac
 }
 
