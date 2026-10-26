@@ -1,150 +1,115 @@
-# 📊 MetaTrader Docker
+# MetaTrader 4/5 in Docker with noVNC
 
-### 🚀 Run MetaTrader 4 (MT4) and MetaTrader 5 (MT5) 24/7 on an Affordable Linux VPS
+Install and manage MetaTrader 4 (MT4) and MetaTrader 5 (MT5) on an Ubuntu/Debian VPS without a desktop environment. The project uses Docker, Wine and noVNC to provide a lightweight, browser-based desktop for the terminals.
 
-Run MT4 and MT5 in Docker on a headless Linux VPS, with browser-based access through noVNC. No Windows host or full desktop environment required.
+## Features
 
-Designed for lightweight VPS deployments: **1 GB RAM is the practical minimum**, while **2 GB or more is recommended** when running both terminals simultaneously.
+- **MT4 and MT5 support** — install either terminal or both.
+- **Interactive management menu** — install/remove terminals, manage Expert Advisors (EAs), indicators and `.set` files, view status and logs, and control the services.
+- **Wine version selection** — choose the supported Wine version during setup, including Wine 11.20 where offered by the installer.
+- **Browser-based access** — view the terminal desktop through noVNC.
+- **Resource-conscious operation** — MT4 can be kept stopped while MT5 is installed to reduce memory pressure on smaller VPS plans.
+- **Automated backup workflow** — create backups before updates, make manual backups, and restore or remove existing backups from the maintenance menu.
+- **Cloudflare WARP integration** — optionally manage WARP from the menu. It can help when the VPS network or public IP has trouble reaching MetaQuotes download servers. WARP is a connectivity option, not a guarantee that every network issue will be resolved.
+- **Timezone configuration** — set the timezone used by the environment.
 
-> ⚠️ **Independent project.** This project is not affiliated with MetaQuotes Software Corp. or any broker. Automated trading involves financial risk. Always test with a demo account before using real funds.
+## Requirements
 
----
+- Ubuntu or Debian VPS.
+- Root or `sudo` access.
+- Docker and Docker Compose v2 (the installer can install Docker when needed).
+- Internet access during setup and when downloading terminal installers.
+- Recommended: 1–2 GB RAM for a lightweight setup. Running both terminals and additional EAs may require more memory.
 
-## 📋 Requirements
+## Installation
 
-| **Item** | **Recommendation** |
-| :--- | :--- |
-| Operating system | Ubuntu Server 22.04 LTS or Debian |
-| RAM | 1 GB minimum; 2 GB or more recommended for MT4 + MT5 |
-| Disk space | At least 10 GB free |
-| Access | Root or sudo privileges |
-| Local machine | SSH client and a modern web browser |
-
----
-
-## 🚀 Quick Start
-
-Clone the repository and enter the project directory:
-
-```bash
-git clone https://github.com/Kurumim3/metatrader-docker.git
-cd metatrader-docker
-```
-
-If the installation script was transferred from Windows, convert its line endings before running it:
-
-```bash
-sed -i 's/\r$//' install-mt-docker.sh
-```
-
-Run the installer:
+Run the installer as root or with `sudo`:
 
 ```bash
 sudo bash install-mt-docker.sh
 ```
 
-After the initial setup, open the interactive management menu at any time with:
+Follow the interactive menu. The guided installation helps configure the base environment and choose the Wine version.
+
+After the initial setup, the menu shortcut is available:
 
 ```bash
 sudo mt-menu
 ```
 
-The installer automates the initial setup, including Docker installation, swap configuration when needed, Docker image building, and environment management. The trading terminals run inside the container using Wine.
+The script also supports command-line actions such as `base`, `terminals`, `bots`, `status`, `backup` and `language`. Run the script with the relevant command or consult its built-in menu for the available options.
 
-> 💡 **MT4 and MT5 installation:** The interactive menu provides options to install MT4 and MT5 inside the Docker container using the project's supported installation workflow. The terminals do not need to be installed manually on the Linux host.
+## Installing MT4 and MT5
 
----
+Use the terminal installation option to install MT4, MT5, or both. If both are selected, the installer can install them sequentially to reduce memory pressure during installation.
 
-## 🌎 Language Support
+The installer uses official MetaQuotes installers when a suitable local installer is not supplied.
 
-The interactive menu and installation messages support:
+## Expert Advisors, Indicators and Set Files
 
-- 🇺🇸 **English**
-- 🇧🇷 **Brazilian Portuguese (pt-BR)**
+The project creates an `EAs` directory inside the project folder. Use the bot-management option to copy your files into the appropriate locations:
 
-You can select your preferred language during the initial setup or change it at any time through the interactive menu using option **L**.
-
----
-
-## 🧭 Interactive Menu
-
-Launch the management menu with:
-
-```bash
-sudo mt-menu
+```text
+MT4/Experts       MT4 Expert Advisors (.ex4 / .mq4)
+MT4/Indicators    MT4 indicators
+MT5/Experts       MT5 Expert Advisors (.ex5 / .mq5)
+MT5/Indicators    MT5 indicators
+sets/             .set files for MT4 and MT5
 ```
 
-| **Option** | **Action** |
-| :---: | :--- |
-| **A** | Guided installation (base environment → MT4/MT5 → Expert Advisors) |
-| **1** | Install the base environment (Docker, swap, and image) |
-| **2** | Install or remove MT4 / MT5 |
-| **3** | Deploy Expert Advisors (EAs), indicators, and `.set` files |
-| **4** | View status and run diagnostics |
-| **5** | Start, stop, or restart services |
-| **6** | Maintenance: backups, updates, logs, and VNC password |
-| **7** | View access instructions (SSH tunnel + noVNC) |
-| **L** | Change language (English / Português) |
-| **0** | Exit |
+After copying files, open the relevant terminal and confirm that the EA or indicator appears in MetaTrader. Check that any required dependencies and input settings are present before running it on a live account.
 
----
+## Accessing MetaTrader
 
-## 🤖 Where to Put Your EAs, Indicators and Sets
+The desktop is provided through noVNC in a web browser. Use the access information shown by the installer or the menu, and follow its SSH-tunnel instructions when connecting remotely.
 
-On the first run, the installer creates an **`EAs/`** folder inside the cloned project (`metatrader-docker/EAs`). Put your files in the matching subfolder, then run menu option **3** to copy them into the terminals:
+The default configuration binds noVNC to the local host interface rather than publishing it directly to the internet.
 
-| **Folder** | **Files** |
-| :--- | :--- |
-| `EAs/MT4/Experts` | MT4 Expert Advisors (`.ex4`) |
-| `EAs/MT4/Indicators` | MT4 indicators (`.ex4`) |
-| `EAs/MT5/Experts` | MT5 Expert Advisors (`.ex5`) |
-| `EAs/MT5/Indicators` | MT5 indicators (`.ex5`) |
-| `EAs/sets` | `.set` files (MT4 and MT5) |
+## Backups, Restore and Updates
 
-Backups are saved in `backups/`, next to `EAs/`. Both folders are ignored by git.
+The maintenance menu includes options to:
 
----
+- Create a backup on demand.
+- Restore a previously created backup.
+- Delete backups that are no longer needed.
+- Update the environment by creating a backup, rebuilding the Docker image and restarting the service.
 
-## 🌐 Accessing MetaTrader Through noVNC
+**Why backups help:** a recent backup provides a recovery point for terminal data and configuration if an update or maintenance operation causes problems. Keeping backups separate from the running container also makes recovery easier if the container or image needs to be rebuilt.
 
-For security, noVNC is bound to `127.0.0.1` on the VPS and is not intended to be exposed directly to the public internet.
+Backups should not be treated as a substitute for an independent copy. For important trading setups, periodically copy backup files to another server or storage location and verify that a restore works.
 
-### 1. Create an SSH Tunnel
+Before updating, make sure there is enough disk space for the new backup. Avoid deleting the only known-good backup until the updated environment has been checked.
 
-From your local computer, open a terminal and run:
+## Cloudflare WARP
 
-```bash
-ssh -N -p 22 -L 6080:127.0.0.1:6080 root@YOUR_IP
+Cloudflare WARP can be managed from the **Status & Maintenance** menu. It is optional.
+
+WARP may help when a VPS provider's network route or public IP has difficulty reaching MetaQuotes download servers. The installer can offer to enable it during base setup, and the maintenance menu provides controls for managing it later.
+
+WARP changes the network path used by the environment, so its effect depends on the VPS network and the destination service. If downloads already work reliably, enabling WARP may not provide a benefit. After changing WARP settings, retry the affected download and review the logs if the problem continues.
+
+## Status and Maintenance
+
+The management menu provides tools for checking the container and terminal status, viewing live logs and resource usage, changing the VNC password, adjusting the timezone, managing WARP, and starting, stopping or restarting services.
+
+If something fails, check the status first, then review the relevant logs before repeating an installation or update.
+
+## Configuration and Data Locations
+
+The main application directory defaults to:
+
+```text
+/opt/mt-docker
 ```
 
-Replace `YOUR_IP` with your VPS IP address and `22` with your SSH port if it is different.
+The installer supports configuration for the application directory, bot directory, backup directory and SSH port. These values can be supplied through the environment or a `.env` file, as supported by the script.
 
-If you connect using a non-root account, replace `root` with your SSH username.
+The selected Wine version is stored in the application's `.env` file. Check the configured paths in your environment before manually moving or deleting files.
 
-### 2. Open noVNC in Your Browser
+## Uninstalling
 
-Keep the SSH tunnel running and open the following URL in your local browser:
+Use the uninstall option in the management menu. Review the displayed actions carefully and make sure any required backups have been copied elsewhere before removing the environment.
 
-[http://localhost:6080/vnc.html?autoconnect=1&resize=scale](http://localhost:6080/vnc.html?autoconnect=1&resize=scale)
+## Disclaimer
 
-You can then access the graphical environment through your browser.
-
-> 🔐 **Security warning:** Do not expose VNC or noVNC directly to the public internet. Use an SSH tunnel to access the interface securely.
-
----
-
-## 📄 License
-
-This project is licensed under the **Apache License 2.0**.
-
-See the [LICENSE](LICENSE) file for the full license text.
-
----
-
-## ⚠️ Disclaimer
-
-This project is an independent, community-developed solution for running MetaTrader terminals in a Docker container on Linux.
-
-MetaTrader 4 and MetaTrader 5 are products of MetaQuotes Software Corp. All trademarks belong to their respective owners.
-
-This project does not provide financial advice or guarantee trading performance, profitability, or uninterrupted operation. You are responsible for your trading decisions, server configuration, and security.
+This project is an environment-management tool and is not financial advice. Trading involves risk, and automated trading systems can lose money. Test terminals, EAs and settings in a demo environment before using a live account.
