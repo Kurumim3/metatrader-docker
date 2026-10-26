@@ -1487,7 +1487,13 @@ etapa_instalar_base() {
   salvar_idioma
 
   info "$(T "Configuring the host (swap, limits, .env, cron)..." "Configurando host (swap, limites, .env, cron)...")"
-  bash "$APP_DIR/scripts/setup-host.sh" 2>&1 | sed 's/^/    /'
+  # Run from a stable cwd: if the shell's current directory was deleted (common
+  # when the script is run from a temp/clone path that vanishes), bash prints
+  # "getcwd: cannot access parent directories" on every child. Harmless but noisy.
+  # Roda a partir de um cwd estável: se o diretório atual do shell foi apagado
+  # (comum ao rodar o script de um path temporário/clone que some), o bash
+  # imprime "getcwd: cannot access parent directories" em todo filho. Inofensivo, mas barulhento.
+  ( cd "$APP_DIR" && bash "$APP_DIR/scripts/setup-host.sh" ) 2>&1 | sed 's/^/    /'
   if [[ "${PIPESTATUS[0]}" -ne 0 ]]; then err "$(T "setup-host failed" "setup-host falhou")"; return 1; fi
   echo
   escolher_tz
