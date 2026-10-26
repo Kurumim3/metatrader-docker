@@ -28,7 +28,20 @@ Run MetaTrader 4 (MT4) and MetaTrader 5 (MT5) on an Ubuntu/Debian VPS without a 
 
 Internet access is required for setup and terminal downloads. Docker Compose is installed by the script when needed.
 
-## Installation
+## Quick Start
+
+Clone the repository and enter the project directory:
+
+```bash
+git clone https://github.com/Kurumim3/metatrader-docker.git
+cd metatrader-docker
+```
+
+If the installation script was transferred from Windows, convert its line endings before running it:
+
+```bash
+sed -i 's/\r$//' install-mt-docker.sh
+```
 
 Run the installer:
 
@@ -36,13 +49,7 @@ Run the installer:
 sudo bash install-mt-docker.sh
 ```
 
-If the script was transferred from Windows, convert line endings first:
-
-```bash
-sed -i 's/\r$//' install-mt-docker.sh
-```
-
-Follow the interactive menu. After installation, open it with:
+After the initial setup, open the interactive management menu at any time with:
 
 ```bash
 sudo mt-menu
