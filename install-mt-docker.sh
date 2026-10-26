@@ -1568,7 +1568,7 @@ instalar_terminal() { # instalar_terminal mt4|mt5 [--keep-stopped]
   fi
 
   echo
-  info "$(T "Installing ${id^^} — takes 10 to 30 min. You can watch it through noVNC (option 7 shows how)." "Instalando ${id^^} — leva de 10 a 30 min. Pode acompanhar pelo noVNC (opção 7 mostra como).")"
+  info "$(T "Installing ${id^^} — takes 10 to 30 min. Watch it through noVNC (SSH tunnel shown just above)." "Instalando ${id^^} — leva de 10 a 30 min. Acompanhe pelo noVNC (túnel SSH mostrado logo acima).")"
   dc exec -T mt mt-sv stop "$id" >/dev/null 2>&1 || true
   sleep 2
 
@@ -1677,6 +1677,17 @@ etapa_instalar_terminais() {
   fi
   info "$(T "Waiting for internal services..." "Aguardando serviços internos...")"
   wait_supervisor || { err "$(T "supervisord did not respond; check the logs (menu 6)" "supervisord não respondeu; veja os logs (menu 6)")"; return 1; }
+
+  # Show access details BEFORE the long install so the user can open the SSH
+  # tunnel and watch noVNC without interrupting the guided flow (or any install).
+  # Mostra o acesso ANTES da instalação longa para o usuário abrir o túnel SSH
+  # e acompanhar pelo noVNC sem interromper a instalação guiada (ou qualquer instalação).
+  echo
+  mostrar_acesso
+  echo
+  info "$(T "Open the SSH tunnel above NOW if you want to watch the installer through noVNC. The install continues here; you do not need option 7." "Abra o túnel SSH acima AGORA se quiser acompanhar o instalador pelo noVNC. A instalação continua aqui; não precisa da opção 7.")"
+  echo
+  read -rp "  ${C_DIM}$(T "ENTER when ready to choose which terminal to install..." "ENTER quando estiver pronto para escolher qual terminal instalar...")${C_RESET} " _ || true
 
   echo
   echo "  ${C_BOLD}$(T "Which terminal to install?" "Qual terminal instalar?")${C_RESET} ${C_DIM}($(T "local installer in data/installers/ preferred; else MetaQuotes" "preferência: instalador local em data/installers/; senão MetaQuotes"))${C_RESET}"
